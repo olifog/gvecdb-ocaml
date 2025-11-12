@@ -1,0 +1,4 @@
+(executable
+ (public_name gvecdb)
+ (name main)
+ (libraries gvecdb lmdb))

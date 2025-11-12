@@ -1,0 +1,3 @@
+[submodule "vendor/ocaml-lmdb"]
+	path = vendor/ocaml-lmdb
+	url = https://github.com/olifog/ocaml-lmdb.git
