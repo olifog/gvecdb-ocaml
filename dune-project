@@ -19,6 +19,11 @@
  (name gvecdb)
  (synopsis "A graph vector database")
  (description "A graph vector database")
- (depends ocaml)
+ (depends
+   ocaml
+   capnp
+   conf-capnproto
+   lmdb
+ )
  (tags
   ("graph" "vector" "database")))
