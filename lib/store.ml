@@ -53,32 +53,38 @@ let close (db : t) : unit =
   Lmdb.Env.close db.env
 
 (** get and increment a metadata counter *)
-let get_next_id (db : t) (key : string) : id =
-  let current = Lmdb.Map.get db.metadata key |> Keys.decode_id in
+let get_next_id (db : t) ?txn (key : string) : id =
+  let current = Lmdb.Map.get db.metadata ?txn key |> Keys.decode_id in
   let next = Int64.add current 1L in
-  Lmdb.Map.set db.metadata key (Keys.encode_id next);
+  Lmdb.Map.set db.metadata ?txn key (Keys.encode_id next);
   current
 
 (** string interning: get or create an ID for a string *)
-let intern (db : t) (s : string) : intern_id =
+let intern (db : t) ?txn (s : string) : intern_id =
   try
     (* check if already interned *)
-    Lmdb.Map.get db.intern_forward s |> Keys.decode_id
+    Lmdb.Map.get db.intern_forward ?txn s |> Keys.decode_id
   with Not_found ->
     (* assign new ID *)
-    let new_id = get_next_id db Metadata.next_intern_id in
-    Lmdb.Map.set db.intern_forward s (Keys.encode_id new_id);
-    Lmdb.Map.set db.intern_reverse (Keys.encode_id new_id) s;
+    let new_id = get_next_id db ?txn Metadata.next_intern_id in
+    Lmdb.Map.set db.intern_forward ?txn s (Keys.encode_id new_id);
+    Lmdb.Map.set db.intern_reverse ?txn (Keys.encode_id new_id) s;
     new_id
 
+(** lookup an interned string ID without creating if not found *)
+let lookup_intern (db : t) ?txn (s : string) : intern_id option =
+  try
+    Some (Lmdb.Map.get db.intern_forward ?txn s |> Keys.decode_id)
+  with Not_found -> None
+
 (** reverse string intern lookup: ID -> string *)
-let unintern (db : t) (id : intern_id) : string =
-  Lmdb.Map.get db.intern_reverse (Keys.encode_id id)
+let unintern (db : t) ?txn (id : intern_id) : string =
+  Lmdb.Map.get db.intern_reverse ?txn (Keys.encode_id id)
 
 (** check if a string is already interned *)
-let is_interned (db : t) (s : string) : bool =
+let is_interned (db : t) ?txn (s : string) : bool =
   try
-    let _ = Lmdb.Map.get db.intern_forward s in
+    let _ = Lmdb.Map.get db.intern_forward ?txn s in
     true
   with Not_found -> false
 

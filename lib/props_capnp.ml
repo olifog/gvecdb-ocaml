@@ -30,26 +30,26 @@ type schema_kind =
   | EdgeSchemaKind
 
 (** register a node schema *)
-let register_node_schema (db : t) (type_name : string) (schema_id : int64) : unit =
+let register_node_schema (db : t) ?txn (type_name : string) (schema_id : int64) : unit =
   let key = "schema:" ^ type_name in
   let kind_byte = '\x00' in
   let schema_id_bytes = Keys.encode_id schema_id in
   let value = String.make 1 kind_byte ^ schema_id_bytes in
-  Lmdb.Map.set db.metadata key value
+  Lmdb.Map.set db.metadata ?txn key value
 
 (** register an edge schema *)
-let register_edge_schema (db : t) (type_name : string) (schema_id : int64) : unit =
+let register_edge_schema (db : t) ?txn (type_name : string) (schema_id : int64) : unit =
   let key = "schema:" ^ type_name in
   let kind_byte = '\x01' in
   let schema_id_bytes = Keys.encode_id schema_id in
   let value = String.make 1 kind_byte ^ schema_id_bytes in
-  Lmdb.Map.set db.metadata key value
+  Lmdb.Map.set db.metadata ?txn key value
 
 (** get schema metadata from lmdb *)
-let get_schema_metadata (db : t) (type_name : string) : (schema_kind * int64) option =
+let get_schema_metadata (db : t) ?txn (type_name : string) : (schema_kind * int64) option =
   let key = "schema:" ^ type_name in
   try
-    let value = Lmdb.Map.get db.metadata key in
+    let value = Lmdb.Map.get db.metadata ?txn key in
     if String.length value < 9 then None
     else
       let kind = match value.[0] with
@@ -65,13 +65,14 @@ let get_schema_metadata (db : t) (type_name : string) : (schema_kind * int64) op
 (** set node properties with metadata wrapper *)
 let set_node_props_capnp
     (db : t)
+    ?txn
     (node_id : node_id)
     (type_name : string)
     (build_fn : 'builder -> unit)
     (init_root : unit -> 'builder)
     (to_message : 'builder -> 'a Capnp.BytesMessage.Message.t) : unit =
   
-  let intern_id = Store.intern db type_name in
+  let intern_id = Store.intern db ?txn type_name in
   
   let user_builder = init_root () in
   build_fn user_builder;
@@ -87,11 +88,12 @@ let set_node_props_capnp
   let blob = CapnpCodec.serialize wrapper_message in
   
   let key = Keys.encode_id node_id in
-  Lmdb.Map.set db.nodes key blob
+  Lmdb.Map.set db.nodes ?txn key blob
 
 (** get node properties with zero-copy from lmdb mmap *)
 let get_node_props_capnp
     (db : t)
+    ?txn
     (node_id : node_id)
     (_type_name : string)
     (of_message : Capnp.Message.ro Capnp.BytesMessage.Message.t -> 'reader)
@@ -99,7 +101,7 @@ let get_node_props_capnp
   
   let key = Keys.encode_id node_id in
   let blob = 
-    try Lmdb.Map.get db.nodes key
+    try Lmdb.Map.get db.nodes ?txn key
     with Not_found ->
       failwith (Printf.sprintf "node not found: %Ld" node_id)
   in
@@ -115,6 +117,7 @@ let get_node_props_capnp
 (** set edge properties with metadata wrapper *)
 let set_edge_props_capnp
     (db : t)
+    ?txn
     (edge_id : edge_id)
     (type_name : string)
     (build_fn : 'builder -> unit)
@@ -122,7 +125,7 @@ let set_edge_props_capnp
     (to_message : 'builder -> 'a Capnp.BytesMessage.Message.t) : unit =
   
   let blob = 
-    try Lmdb.Map.get db.edges (Keys.encode_id edge_id)
+    try Lmdb.Map.get db.edges ?txn (Keys.encode_id edge_id)
     with Not_found -> failwith (Printf.sprintf "edge not found: %Ld" edge_id)
   in
   let wrapper_msg = CapnpCodec.deserialize blob in
@@ -130,7 +133,7 @@ let set_edge_props_capnp
   let src = Stdint.Uint64.to_int64 (WrapperMod.Reader.EdgePropertyBlob.src_get wrapper) in
   let dst = Stdint.Uint64.to_int64 (WrapperMod.Reader.EdgePropertyBlob.dst_get wrapper) in
   
-  let new_intern_id = Store.intern db type_name in
+  let new_intern_id = Store.intern db ?txn type_name in
   
   let user_builder = init_root () in
   build_fn user_builder;
@@ -146,11 +149,12 @@ let set_edge_props_capnp
   
   let wrapper_message = WrapperMod.Builder.EdgePropertyBlob.to_message wrapper_builder in
   let blob = CapnpCodec.serialize wrapper_message in
-  Lmdb.Map.set db.edges (Keys.encode_id edge_id) blob
+  Lmdb.Map.set db.edges ?txn (Keys.encode_id edge_id) blob
 
 (** get edge properties with zero-copy from lmdb mmap *)
 let get_edge_props_capnp
     (db : t)
+    ?txn
     (edge_id : edge_id)
     (_type_name : string)
     (of_message : Capnp.Message.ro Capnp.BytesMessage.Message.t -> 'reader)
@@ -158,7 +162,7 @@ let get_edge_props_capnp
   
   let key = Keys.encode_id edge_id in
   let blob =
-    try Lmdb.Map.get db.edges key
+    try Lmdb.Map.get db.edges ?txn key
     with Not_found ->
       failwith (Printf.sprintf "edge not found: %Ld" edge_id)
   in

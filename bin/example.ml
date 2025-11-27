@@ -132,6 +132,73 @@ let () =
   Printf.printf "    charlie exists: %b\n" (Gvecdb.node_exists db charlie);
   print_endline "" ;
   
+  (* transaction example *)
+  print_endline "=== transaction examples ===" ;
+  print_endline "" ;
+  
+  print_endline "creating multiple nodes atomically with with_transaction" ;
+  let result = Gvecdb.with_transaction db (fun txn ->
+    (* all these operations are atomic *)
+    let dave = Gvecdb.create_node db ~txn "person" in
+    let eve = Gvecdb.create_node db ~txn "person" in
+    let frank = Gvecdb.create_node db ~txn "person" in
+    
+    (* create edges within the same transaction *)
+    let _ = Gvecdb.create_edge db ~txn "knows" dave eve in
+    let _ = Gvecdb.create_edge db ~txn "knows" eve frank in
+    let _ = Gvecdb.create_edge db ~txn "knows" dave frank in
+    
+    (* set properties within the transaction *)
+    Gvecdb.set_node_props_capnp db ~txn dave "person"
+      (fun builder ->
+        SchemaMod.Builder.Person.name_set builder "Dave";
+        SchemaMod.Builder.Person.age_set_int_exn builder 25)
+      SchemaMod.Builder.Person.init_root
+      SchemaMod.Builder.Person.to_message;
+    
+    (dave, eve, frank)
+  ) in
+  (match result with
+   | Some (dave, eve, frank) ->
+       Printf.printf "  transaction committed! created nodes: %Ld, %Ld, %Ld\n" dave eve frank;
+       Printf.printf "  dave's outbound edges: %d\n" 
+         (List.length (Gvecdb.get_outbound_edges db dave))
+   | None ->
+       print_endline "  transaction aborted!");
+  print_endline "" ;
+  
+  print_endline "demonstrating transaction rollback on exception" ;
+  let node_count_before = 
+    (* count nodes by checking existence up to ID 100 *)
+    let count = ref 0 in
+    for i = 0 to 100 do
+      if Gvecdb.node_exists db (Int64.of_int i) then incr count
+    done;
+    !count
+  in
+  Printf.printf "  nodes before failed transaction: %d\n" node_count_before;
+  
+  (try
+    let _ = Gvecdb.with_transaction db (fun txn ->
+      let _ = Gvecdb.create_node db ~txn "person" in
+      let _ = Gvecdb.create_node db ~txn "person" in
+      (* simulate an error - transaction will be rolled back *)
+      failwith "simulated error!"
+    ) in
+    ()
+  with Failure _ ->
+    print_endline "  exception caught, transaction rolled back");
+  
+  let node_count_after = 
+    let count = ref 0 in
+    for i = 0 to 100 do
+      if Gvecdb.node_exists db (Int64.of_int i) then incr count
+    done;
+    !count
+  in
+  Printf.printf "  nodes after failed transaction: %d (unchanged!)\n" node_count_after;
+  print_endline "" ;
+  
   print_endline "closing database" ;
   Gvecdb.close db ;
   print_endline "" ;

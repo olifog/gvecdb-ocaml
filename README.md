@@ -5,7 +5,7 @@ This is a Part II project for the Computer Science Tripos at the University of C
 
 ## Project Structure
 
-- `lib/` - core library (link this into your OCaml projects)
+- `lib/` - core library
   - `types.ml` - core type definitions
   - `keys.ml` - key encoding/decoding for LMDB
   - `store.ml` - low-level LMDB operations and string interning
@@ -21,6 +21,8 @@ This is a Part II project for the Computer Science Tripos at the University of C
 - `vendor/` - vendored dependencies (ocaml-lmdb)
 
 ## Quick Start
+
+First, make sure LMDB is installed on your system
 
 ### Build
 
