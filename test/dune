@@ -1,3 +1,29 @@
+(library
+ (name test_common)
+ (modules test_common)
+ (libraries gvecdb test_schemas capnp stdint unix))
+
 (test
- (name test_gvecdb)
- (libraries gvecdb test_schemas capnp unix))
+ (name test_basic)
+ (modules test_basic)
+ (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))
+
+(test
+ (name test_transactions)
+ (modules test_transactions)
+ (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))
+
+(test
+ (name test_zerocopy)
+ (modules test_zerocopy)
+ (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))
+
+(test
+ (name test_keys)
+ (modules test_keys)
+ (libraries alcotest gvecdb unix))
+
+(test
+ (name test_adjacency)
+ (modules test_adjacency)
+ (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))

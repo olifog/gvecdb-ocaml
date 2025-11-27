@@ -2,51 +2,70 @@
 
 open Types
 
-(** convert int64 to big-endian 8-byte string *)
-let encode_id (id : int64) : string =
-  let buf = Bytes.create 8 in
-  Bytes.set_int64_be buf 0 id;
-  Bytes.to_string buf
+module Bigstring = Bigstringaf
 
-(** convert big-endian 8-byte string to int64 *)
-let decode_id (s : string) : int64 =
-  let buf = Bytes.of_string s in
-  Bytes.get_int64_be buf 0
+let encode_id_bs (id : int64) : bigstring =
+  let buf = Bigstring.create 8 in
+  Bigstring.set_int64_be buf 0 id;
+  buf
 
-(** encode adjacency key for outbound/inbound indexes
-    format: (src_or_dst_id, intern_id, opposite_id, edge_id) -> 32 bytes *)
-let encode_adjacency ~node_id ~intern_id ~opposite_id ~edge_id : string =
-  let buf = Bytes.create 32 in
-  Bytes.set_int64_be buf 0 node_id;
-  Bytes.set_int64_be buf 8 intern_id;
-  Bytes.set_int64_be buf 16 opposite_id;
-  Bytes.set_int64_be buf 24 edge_id;
-  Bytes.to_string buf
+let decode_id_bs (bs : bigstring) : int64 =
+  Bigstring.get_int64_be bs 0
 
-(** decode adjacency key *)
-let decode_adjacency (s : string) : node_id * intern_id * node_id * edge_id =
-  let buf = Bytes.of_string s in
-  let node_id = Bytes.get_int64_be buf 0 in
-  let intern_id = Bytes.get_int64_be buf 8 in
-  let opposite_id = Bytes.get_int64_be buf 16 in
-  let edge_id = Bytes.get_int64_be buf 24 in
+(** Adjacency key: (node_id, intern_id, opposite_id, edge_id) -> 32 bytes *)
+let encode_adjacency_bs ~node_id ~intern_id ~opposite_id ~edge_id : bigstring =
+  let buf = Bigstring.create 32 in
+  Bigstring.set_int64_be buf 0 node_id;
+  Bigstring.set_int64_be buf 8 intern_id;
+  Bigstring.set_int64_be buf 16 opposite_id;
+  Bigstring.set_int64_be buf 24 edge_id;
+  buf
+
+let decode_adjacency_bs (bs : bigstring) : node_id * intern_id * node_id * edge_id =
+  let node_id = Bigstring.get_int64_be bs 0 in
+  let intern_id = Bigstring.get_int64_be bs 8 in
+  let opposite_id = Bigstring.get_int64_be bs 16 in
+  let edge_id = Bigstring.get_int64_be bs 24 in
   (node_id, intern_id, opposite_id, edge_id)
 
-(** encode prefix for adjacency range queries
-    can query by just node_id, or node_id + intern_id, etc *)
-let encode_adjacency_prefix ?node_id ?intern_id ?opposite_id () : string =
+let encode_adjacency_prefix_bs ?node_id ?intern_id ?opposite_id () : bigstring =
   match node_id, intern_id, opposite_id with
-  | None, _, _ -> ""
-  | Some nid, None, _ -> encode_id nid
+  | None, _, _ -> Bigstring.create 0
+  | Some nid, None, _ -> encode_id_bs nid
   | Some nid, Some tid, None ->
-      let buf = Bytes.create 16 in
-      Bytes.set_int64_be buf 0 nid;
-      Bytes.set_int64_be buf 8 tid;
-      Bytes.to_string buf
+      let buf = Bigstring.create 16 in
+      Bigstring.set_int64_be buf 0 nid;
+      Bigstring.set_int64_be buf 8 tid;
+      buf
   | Some nid, Some tid, Some oid ->
-      let buf = Bytes.create 24 in
-      Bytes.set_int64_be buf 0 nid;
-      Bytes.set_int64_be buf 8 tid;
-      Bytes.set_int64_be buf 16 oid;
-      Bytes.to_string buf
+      let buf = Bigstring.create 24 in
+      Bigstring.set_int64_be buf 0 nid;
+      Bigstring.set_int64_be buf 8 tid;
+      Bigstring.set_int64_be buf 16 oid;
+      buf
 
+(** edge metadata: (type_id, src, dst) -> 24 bytes *)
+let encode_edge_meta ~type_id ~src ~dst : bigstring =
+  let buf = Bigstring.create 24 in
+  Bigstring.set_int64_be buf 0 type_id;
+  Bigstring.set_int64_be buf 8 src;
+  Bigstring.set_int64_be buf 16 dst;
+  buf
+
+let decode_edge_meta (bs : bigstring) : intern_id * node_id * node_id =
+  let type_id = Bigstring.get_int64_be bs 0 in
+  let src = Bigstring.get_int64_be bs 8 in
+  let dst = Bigstring.get_int64_be bs 16 in
+  (type_id, src, dst)
+
+let bigstring_has_prefix ~prefix (bs : bigstring) : bool =
+  let prefix_len = Bigstring.length prefix in
+  let bs_len = Bigstring.length bs in
+  if bs_len < prefix_len then false
+  else
+    let rec loop i =
+      if i >= prefix_len then true
+      else if Bigstring.get bs i <> Bigstring.get prefix i then false
+      else loop (i + 1)
+    in
+    loop 0

@@ -1,12 +1,6 @@
-(rule
- (deps gvecdb_internal.capnp)
- (targets gvecdb_internal.ml gvecdb_internal.mli)
- (action
-  (chdir %{workspace_root}/lib
-    (run capnp compile -o ocaml gvecdb_internal.capnp))))
-
 (library
+ (instrumentation (backend bisect_ppx))
  (name gvecdb)
  (public_name gvecdb)
- (libraries lmdb capnp)
- (modules types keys store gvecdb_internal props_capnp gvecdb))
+ (libraries lmdb capnp bigstringaf)
+ (modules types keys store bigstring_storage bigstring_message props_capnp gvecdb))

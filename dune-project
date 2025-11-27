@@ -24,6 +24,8 @@
    capnp
    conf-capnproto
    lmdb
+   (alcotest :with-test)
+   (bisect_ppx :with-test)
  )
  (tags
   ("graph" "vector" "database")))

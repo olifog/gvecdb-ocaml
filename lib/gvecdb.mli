@@ -2,6 +2,12 @@
 
 (** {1 core types} *)
 
+(** BigstringMessage for mmap-backed CapnProto reads.
+    use with Schema.Make to create readers that read from mmap. *)
+module Bigstring_message : Capnp.MessageSig.S
+
+type bigstring = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+
 (** 64-bit IDs for nodes, edges, vectors, etc *)
 type id = int64
 
@@ -138,6 +144,12 @@ val edge_exists : t -> ?txn:[> `Read ] txn -> edge_id -> bool
 (** [delete_edge db ?txn edge_id] deletes an edge and cleans up adjacency indexes *)
 val delete_edge : t -> ?txn:[> `Read | `Write ] txn -> edge_id -> unit
 
+(** [get_edge_info db ?txn edge_id] looks up edge information by edge id
+    
+    @return [Some edge_info] if found, [None] if edge doesn't exist
+*)
+val get_edge_info : t -> ?txn:[> `Read ] txn -> edge_id -> edge_info option
+
 (** {1 adjacency queries} *)
 
 (** [get_outbound_edges db ?txn node_id] returns all outbound edges from a node *)
@@ -157,12 +169,6 @@ val get_outbound_edges_by_type : t -> ?txn:[> `Read ] txn -> node_id -> string -
     @param edge_type string name of the edge type to filter by
 *)
 val get_inbound_edges_by_type : t -> ?txn:[> `Read ] txn -> node_id -> string -> edge_info list
-
-(** [get_edge_info db ?txn edge_id] looks up edge information by edge id
-    
-    @return [Some edge_info] if found, [None] if edge doesn't exist
-*)
-val get_edge_info : t -> ?txn:[> `Read ] txn -> edge_id -> edge_info option
 
 (** {1 property schemas with capnproto} *)
 
@@ -202,19 +208,19 @@ val set_node_props_capnp :
   ('builder -> 'a Capnp.BytesMessage.Message.t) -> 
   unit
 
-(** [get_node_props_capnp db ?txn node_id type_name of_message read_fn]
+(** [get_node_props_capnp db ?txn node_id of_message read_fn]
     gets properties using capnproto reader api with zero-copy from lmdb.
     
     Example:
     {[
-      let name = get_node_props_capnp db alice "person"
+      let name = get_node_props_capnp db alice
         Person.Reader.of_message
         Person.Reader.name_get
     ]}
 *)
 val get_node_props_capnp :
-  t -> ?txn:[> `Read ] txn -> node_id -> string ->
-  (Capnp.Message.ro Capnp.BytesMessage.Message.t -> 'reader) ->
+  t -> ?txn:[> `Read ] txn -> node_id ->
+  (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
   ('reader -> 'result) ->
   'result
 
@@ -230,8 +236,8 @@ val set_edge_props_capnp :
 
 (** [get_edge_props_capnp db ?txn edge_id ...] gets edge properties using reader api with zero-copy from lmdb *)
 val get_edge_props_capnp :
-  t -> ?txn:[> `Read ] txn -> edge_id -> string ->
-  (Capnp.Message.ro Capnp.BytesMessage.Message.t -> 'reader) ->
+  t -> ?txn:[> `Read ] txn -> edge_id ->
+  (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
   ('reader -> 'result) ->
   'result
 
