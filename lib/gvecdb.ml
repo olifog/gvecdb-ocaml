@@ -82,14 +82,6 @@ let node_exists (db : t) ?txn (node_id : node_id) : bool =
     true
   with Not_found -> false
 
-(** delete a node *)
-let delete_node (db : t) ?txn (node_id : node_id) : unit =
-  let key = Keys.encode_id_bs node_id in
-  try
-    Lmdb.Map.remove db.node_meta ?txn key;
-    Lmdb.Map.remove db.nodes ?txn key
-  with Not_found -> ()
-
 (** {1 edge operations} *)
 
 (** create a new edge with the given type, source and destination nodes *)
@@ -188,3 +180,17 @@ let get_inbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : str
   | Some intern_id ->
       let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
       scan_adjacency_index db ?txn ~direction:Inbound ~node_id db.inbound prefix
+
+(** {1 node deletion} *)
+
+(** delete a node and cascade delete all connected edges *)
+let delete_node (db : t) ?txn (node_id : node_id) : unit =
+  let key = Keys.encode_id_bs node_id in
+  try
+    let outbound_edges = get_outbound_edges db ?txn node_id in
+    let inbound_edges = get_inbound_edges db ?txn node_id in
+    List.iter (fun (edge_info : edge_info) -> delete_edge db ?txn edge_info.id) outbound_edges;
+    List.iter (fun (edge_info : edge_info) -> delete_edge db ?txn edge_info.id) inbound_edges;
+    Lmdb.Map.remove db.node_meta ?txn key;
+    Lmdb.Map.remove db.nodes ?txn key
+  with Not_found -> ()

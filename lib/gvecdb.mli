@@ -123,9 +123,10 @@ val node_exists : t -> ?txn:[> `Read ] txn -> node_id -> bool
 *)
 val get_node_info : t -> ?txn:[> `Read ] txn -> node_id -> node_info option
 
-(** [delete_node db ?txn node_id] deletes a node from the database.
+(** [delete_node db ?txn node_id] deletes a node and all connected edges.
     
-    note: does not delete connected edges. delete edges first if needed.
+    cascade deletes all outbound and inbound edges connected to the node,
+    cleaning up adjacency indexes. safe to call on non-existent nodes.
 *)
 val delete_node : t -> ?txn:[> `Read | `Write ] txn -> node_id -> unit
 

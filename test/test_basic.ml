@@ -41,6 +41,25 @@ let test_delete_nonexistent_node () =
   Gvecdb.delete_node db 999999L;
   check pass "no exception" () ()
 
+let test_delete_node_cascades_edges () =
+  with_temp_db "basic" @@ fun db ->
+  register_schemas db;
+  let alice = Gvecdb.create_node db "person" in
+  let bob = Gvecdb.create_node db "person" in
+  let charlie = Gvecdb.create_node db "person" in
+  let e1 = Gvecdb.create_edge db "knows" alice bob in
+  let e2 = Gvecdb.create_edge db "knows" charlie alice in
+  check bool "e1 exists before" true (Gvecdb.edge_exists db e1);
+  check bool "e2 exists before" true (Gvecdb.edge_exists db e2);
+  check int "alice outbound before" 1 (List.length (Gvecdb.get_outbound_edges db alice));
+  check int "alice inbound before" 1 (List.length (Gvecdb.get_inbound_edges db alice));
+  Gvecdb.delete_node db alice;
+  check bool "alice not exists after" false (Gvecdb.node_exists db alice);
+  check bool "e1 not exists after" false (Gvecdb.edge_exists db e1);
+  check bool "e2 not exists after" false (Gvecdb.edge_exists db e2);
+  check int "bob inbound after" 0 (List.length (Gvecdb.get_inbound_edges db bob));
+  check int "charlie outbound after" 0 (List.length (Gvecdb.get_outbound_edges db charlie))
+
 (** {1 Edge tests} *)
 
 let test_create_edge () =
@@ -259,6 +278,7 @@ let node_tests = [
   "delete_node", `Quick, test_delete_node;
   "node_not_found", `Quick, test_node_not_found;
   "delete_nonexistent_node", `Quick, test_delete_nonexistent_node;
+  "delete_node_cascades_edges", `Quick, test_delete_node_cascades_edges;
 ]
 
 let edge_tests = [
