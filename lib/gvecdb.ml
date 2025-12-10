@@ -128,17 +128,19 @@ let delete_edge (db : t) ?txn (edge_id : edge_id) : unit =
 
 (** {1 adjacency queries} *)
 
+type direction = Outbound | Inbound
+
 (** scan the adjacency index for edges with the given prefix *)
-let scan_adjacency_index (db : t) ?txn (map : (bigstring, bigstring, [`Uni]) Lmdb.Map.t) (prefix : bigstring) : edge_info list =
+let scan_adjacency_index (db : t) ?txn ~direction ~node_id (map : (bigstring, bigstring, [`Uni]) Lmdb.Map.t) (prefix : bigstring) : edge_info list =
   let prefix_len = Bigstring.length prefix in
   let txn_ro = Option.map (fun t -> (t :> [`Read] Lmdb.Txn.t)) txn in
-  let pairs = Lmdb.Cursor.go Lmdb.Ro ?txn:txn_ro map (fun cursor ->
+  let tuples = Lmdb.Cursor.go Lmdb.Ro ?txn:txn_ro map (fun cursor ->
     let rec collect acc =
       try
         let (key, _) = Lmdb.Cursor.next cursor in
         if Bigstring.length key >= prefix_len && Keys.bigstring_has_prefix ~prefix key then
-          let (_, intern_id, _, edge_id) = Keys.decode_adjacency_bs key in
-          collect ((edge_id, intern_id) :: acc)
+          let (_, intern_id, opposite_id, edge_id) = Keys.decode_adjacency_bs key in
+          collect ((edge_id, intern_id, opposite_id) :: acc)
         else
           acc
       with Lmdb.Not_found -> acc
@@ -146,28 +148,30 @@ let scan_adjacency_index (db : t) ?txn (map : (bigstring, bigstring, [`Uni]) Lmd
     try
       let (key, _) = Lmdb.Cursor.seek_range cursor prefix in
       if Bigstring.length key >= prefix_len && Keys.bigstring_has_prefix ~prefix key then
-        let (_, intern_id, _, edge_id) = Keys.decode_adjacency_bs key in
-        List.rev (collect [(edge_id, intern_id)])
+        let (_, intern_id, opposite_id, edge_id) = Keys.decode_adjacency_bs key in
+        List.rev (collect [(edge_id, intern_id, opposite_id)])
       else
         []
     with Lmdb.Not_found -> []
   ) in
-  List.filter_map (fun (edge_id, intern_id) ->
+  List.map (fun (edge_id, intern_id, opposite_id) ->
     let edge_type = Store.unintern db ?txn intern_id in
-    match Props_capnp.get_edge_meta db ?txn edge_id with
-    | Some (_, src, dst) -> Some { id = edge_id; edge_type; src; dst }
-    | None -> None
-  ) pairs
+    let (src, dst) = match direction with
+      | Outbound -> (node_id, opposite_id)
+      | Inbound -> (opposite_id, node_id)
+    in
+    { id = edge_id; edge_type; src; dst }
+  ) tuples
 
 (** get all outbound edges from a node *)
 let get_outbound_edges (db : t) ?txn (node_id : node_id) : edge_info list =
   let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
-  scan_adjacency_index db ?txn db.outbound prefix
+  scan_adjacency_index db ?txn ~direction:Outbound ~node_id db.outbound prefix
 
 (** get all inbound edges to a node *)
 let get_inbound_edges (db : t) ?txn (node_id : node_id) : edge_info list =
   let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
-  scan_adjacency_index db ?txn db.inbound prefix
+  scan_adjacency_index db ?txn ~direction:Inbound ~node_id db.inbound prefix
 
 (** get all outbound edges of a specific type from a node *)
 let get_outbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : string) : edge_info list =
@@ -175,7 +179,7 @@ let get_outbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : st
   | None -> []  (* type not interned means no edges of this type exist *)
   | Some intern_id ->
       let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
-      scan_adjacency_index db ?txn db.outbound prefix
+      scan_adjacency_index db ?txn ~direction:Outbound ~node_id db.outbound prefix
 
 (** get all inbound edges of a specific type to a node *)
 let get_inbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : string) : edge_info list =
@@ -183,4 +187,4 @@ let get_inbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : str
   | None -> []  (* type not interned means no edges of this type exist *)
   | Some intern_id ->
       let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
-      scan_adjacency_index db ?txn db.inbound prefix
+      scan_adjacency_index db ?txn ~direction:Inbound ~node_id db.inbound prefix
