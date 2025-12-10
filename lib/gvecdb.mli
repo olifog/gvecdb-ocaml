@@ -88,12 +88,15 @@ val abort_transaction : 'perm txn -> 'a
 
 (** {1 database lifecycle} *)
 
-(** [create path] creates or opens a gvecdb database at [path]
+(** [create ?map_size path] creates or opens a gvecdb database at [path]
     
+    @param map_size maximum database size in bytes. Default is 10GB.
+      This reserves virtual address space but doesn't allocate physical memory
+      until data is written. On 64-bit systems, it's safe to set this very high.
     @param path path to the database file
     @return database handle
 *)
-val create : string -> t
+val create : ?map_size:int -> string -> t
 
 (** [close db] closes the database and releases all resources.
     

@@ -4,10 +4,11 @@ open Types
 
 module Bigstring = Bigstringaf
 
-let create (path : string) : t =
+let default_map_size = 10 * 1024 * 1024 * 1024
+
+let create ?(map_size = default_map_size) (path : string) : t =
   let flags = Lmdb.Env.Flags.no_subdir in
   let max_maps = 9 in
-  let map_size = 100 * 1024 * 1024 in
   let env = Lmdb.Env.create Lmdb.Rw ~max_maps ~map_size ~flags path in
   
   let nodes = Lmdb.Map.create Lmdb.Map.Nodup ~name:"nodes" 

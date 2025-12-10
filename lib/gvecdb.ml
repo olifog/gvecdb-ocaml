@@ -7,7 +7,7 @@ module Bigstring = Bigstringaf
 module Bigstring_message = Bigstring_message
 
 (** create or open a database at the given path *)
-let create = Store.create
+let create ?map_size path = Store.create ?map_size path
 
 (** close the database *)
 let close = Store.close
