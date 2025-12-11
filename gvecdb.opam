@@ -12,9 +12,10 @@ bug-reports: "https://github.com/olifog/gvecdb-ocaml/issues"
 depends: [
   "dune" {>= "3.17"}
   "ocaml"
+  "dune-configurator"
   "capnp"
   "conf-capnproto"
-  "lmdb"
+  "bigstringaf"
   "alcotest" {with-test}
   "bisect_ppx" {with-test}
   "odoc" {with-doc}

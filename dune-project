@@ -21,9 +21,10 @@
  (description "A graph vector database")
  (depends
    ocaml
+   dune-configurator
    capnp
    conf-capnproto
-   lmdb
+   bigstringaf
    (alcotest :with-test)
    (bisect_ppx :with-test)
  )
