@@ -23,6 +23,9 @@ type edge_id = id
 (** vector ID *)
 type vector_id = id
 
+(** vector tag ID *)
+type vector_tag_id = intern_id
+
 (** node information record *)
 type node_info = {
   id : node_id;
@@ -37,6 +40,13 @@ type edge_info = {
   dst : node_id;
 }
 
+(** vector information record *)
+type vector_info = {
+  vector_id : vector_id;
+  node_id : node_id;
+  vector_tag : string;
+}
+
 (** database handle *)
 type t
 
@@ -45,6 +55,7 @@ type t
 type error =
   | Node_not_found of node_id
   | Edge_not_found of edge_id
+  | Vector_not_found of vector_id
   | Storage_full
   | Storage_error of string
   | Corrupted_data of string
@@ -292,3 +303,83 @@ val get_edge_props_capnp :
   (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
   ('reader -> 'result) ->
   ('result, error) result
+
+(** {1 vectors} *)
+
+(** [create_vector db ?txn node_id vector_tag data] creates a new vector attached to a node.
+    
+    Vectors are stored as raw bytes (typically float32 arrays).
+    The vector_tag allows multiple vectors per node (e.g., "title_embedding", "content_embedding").
+    
+    @param node_id the node to attach the vector to
+    @param vector_tag string tag for this vector type
+    @param data raw vector bytes (e.g., float32 array as bigstring)
+    @return [Ok vector_id] on success, [Error (Node_not_found id)] if node doesn't exist
+*)
+val create_vector : t -> ?txn:[> `Read | `Write ] txn -> node_id -> string -> bigstring -> (vector_id, error) result
+
+(** [vector_exists db ?txn vector_id] checks if a vector exists
+    
+    @return [Ok true] if exists, [Ok false] if not, [Error e] on storage error
+*)
+val vector_exists : t -> ?txn:[> `Read ] txn -> vector_id -> (bool, error) result
+
+(** [get_vector db ?txn vector_id] gets vector data by ID.
+    
+    Returns a view into mmap'd memory - only valid within the current transaction.
+    
+    @return [Ok bigstring] on success, [Error (Vector_not_found id)] if not found
+*)
+val get_vector : t -> ?txn:[> `Read ] txn -> vector_id -> (bigstring, error) result
+
+(** [get_vector_info db ?txn vector_id] gets vector metadata (owning node and tag).
+    
+    @return [Ok vector_info] on success, [Error (Vector_not_found id)] if not found
+*)
+val get_vector_info : t -> ?txn:[> `Read ] txn -> vector_id -> (vector_info, error) result
+
+(** [delete_vector db ?txn vector_id] deletes a vector and cleans up indexes.
+    
+    @return [Ok ()] on success, [Error (Vector_not_found id)] if not found
+*)
+val delete_vector : t -> ?txn:[> `Read | `Write ] txn -> vector_id -> (unit, error) result
+
+(** [get_vectors_for_node db ?txn node_id ?vector_tag ()] gets all vectors attached to a node.
+    
+    @param vector_tag optional filter by tag name
+    @return [Ok vector_info list] on success (empty list if none)
+*)
+val get_vectors_for_node : t -> ?txn:[> `Read ] txn -> node_id -> ?vector_tag:string -> unit -> (vector_info list, error) result
+
+(** {1 k-NN search} *)
+
+(** distance metric for vector similarity *)
+type distance_metric = 
+  | Euclidean   (** L2 distance *)
+  | Cosine      (** cosine distance (1 - cosine similarity) *)
+  | DotProduct  (** negative dot product (so smaller = more similar) *)
+
+(** k-NN search result *)
+type knn_result = {
+  vector_id : vector_id;
+  node_id : node_id;
+  vector_tag : string;
+  distance : float;
+}
+
+(** [knn_brute_force db ?txn ~metric ~k query] performs brute-force k-NN search.
+    
+    Scans all vectors in the database, computes distances, and returns the k nearest.
+    
+    @param metric distance metric to use
+    @param k number of nearest neighbors to return
+    @param query query vector as float array
+    @return [Ok results] sorted by distance (ascending)
+*)
+val knn_brute_force : t -> ?txn:[> `Read ] txn -> metric:distance_metric -> k:int -> float array -> (knn_result list, error) result
+
+(** [knn_brute_force_bs db ?txn ~metric ~k query] like [knn_brute_force] but with bigstring query.
+    
+    @param query query vector as bigstring (float32 array in little-endian format)
+*)
+val knn_brute_force_bs : t -> ?txn:[> `Read ] txn -> metric:distance_metric -> k:int -> bigstring -> (knn_result list, error) result

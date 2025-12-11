@@ -7,6 +7,7 @@ type intern_id = int64
 type node_id = id
 type edge_id = id
 type vector_id = id
+type vector_tag_id = intern_id
 
 type node_info = {
   id : node_id;
@@ -20,9 +21,16 @@ type edge_info = {
   dst : node_id;
 }
 
+type vector_info = {
+  vector_id : vector_id;
+  node_id : node_id;
+  vector_tag : string;
+}
+
 type error =
   | Node_not_found of node_id
   | Edge_not_found of edge_id
+  | Vector_not_found of vector_id
   | Storage_full
   | Storage_error of string
   | Corrupted_data of string
@@ -31,6 +39,7 @@ module Error = struct
   let to_string = function
     | Node_not_found id -> Printf.sprintf "node not found: %Ld" id
     | Edge_not_found id -> Printf.sprintf "edge not found: %Ld" id
+    | Vector_not_found id -> Printf.sprintf "vector not found: %Ld" id
     | Storage_full -> "storage full"
     | Storage_error msg -> Printf.sprintf "storage error: %s" msg
     | Corrupted_data msg -> Printf.sprintf "corrupted data: %s" msg
@@ -69,6 +78,9 @@ type t = {
   intern_forward : (string, bigstring, [`Uni]) Lmdb.Map.t;
   intern_reverse : (bigstring, string, [`Uni]) Lmdb.Map.t;
   metadata : (string, bigstring, [`Uni]) Lmdb.Map.t;
+  vectors : (bigstring, bigstring, [`Uni]) Lmdb.Map.t;
+  vector_index : (bigstring, bigstring, [`Uni]) Lmdb.Map.t;
+  vector_owners : (bigstring, bigstring, [`Uni]) Lmdb.Map.t;
 }
 
 module Metadata = struct

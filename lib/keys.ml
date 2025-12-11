@@ -69,3 +69,39 @@ let bigstring_has_prefix ~prefix (bs : bigstring) : bool =
       else loop (i + 1)
     in
     loop 0
+
+(** vector index key: (node_id, vector_tag_id, vector_id) -> 24 bytes *)
+let encode_vector_index_bs ~node_id ~vector_tag_id ~vector_id : bigstring =
+  let buf = Bigstring.create 24 in
+  Bigstring.set_int64_be buf 0 node_id;
+  Bigstring.set_int64_be buf 8 vector_tag_id;
+  Bigstring.set_int64_be buf 16 vector_id;
+  buf
+
+let decode_vector_index_bs (bs : bigstring) : node_id * intern_id * id =
+  let node_id = Bigstring.get_int64_be bs 0 in
+  let vector_tag_id = Bigstring.get_int64_be bs 8 in
+  let vector_id = Bigstring.get_int64_be bs 16 in
+  (node_id, vector_tag_id, vector_id)
+
+let encode_vector_index_prefix_bs ?node_id ?vector_tag_id () : bigstring =
+  match node_id, vector_tag_id with
+  | None, _ -> Bigstring.create 0
+  | Some nid, None -> encode_id_bs nid
+  | Some nid, Some tid ->
+      let buf = Bigstring.create 16 in
+      Bigstring.set_int64_be buf 0 nid;
+      Bigstring.set_int64_be buf 8 tid;
+      buf
+
+(** vector owner value: (node_id, vector_tag_id) -> 16 bytes *)
+let encode_vector_owner_bs ~node_id ~vector_tag_id : bigstring =
+  let buf = Bigstring.create 16 in
+  Bigstring.set_int64_be buf 0 node_id;
+  Bigstring.set_int64_be buf 8 vector_tag_id;
+  buf
+
+let decode_vector_owner_bs (bs : bigstring) : node_id * intern_id =
+  let node_id = Bigstring.get_int64_be bs 0 in
+  let vector_tag_id = Bigstring.get_int64_be bs 8 in
+  (node_id, vector_tag_id)

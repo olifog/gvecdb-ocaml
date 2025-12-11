@@ -9,7 +9,7 @@ let default_map_size = 10 * 1024 * 1024 * 1024
 let create ?(map_size = default_map_size) (path : string) : (t, error) result =
   wrap_lmdb_exn (fun () ->
     let flags = Lmdb.Env.Flags.no_subdir in
-    let max_maps = 9 in
+    let max_maps = 12 in
     let env = Lmdb.Env.create Lmdb.Rw ~max_maps ~map_size ~flags path in
     
     let nodes = Lmdb.Map.create Lmdb.Map.Nodup ~name:"nodes" 
@@ -30,10 +30,17 @@ let create ?(map_size = default_map_size) (path : string) : (t, error) result =
       ~key:Lmdb.Conv.bigstring ~value:Lmdb.Conv.string env in
     let metadata = Lmdb.Map.create Lmdb.Map.Nodup ~name:"metadata"
       ~key:Lmdb.Conv.string ~value:Lmdb.Conv.bigstring env in
+    let vectors = Lmdb.Map.create Lmdb.Map.Nodup ~name:"vectors"
+      ~key:Lmdb.Conv.bigstring ~value:Lmdb.Conv.bigstring env in
+    let vector_index = Lmdb.Map.create Lmdb.Map.Nodup ~name:"vector_index"
+      ~key:Lmdb.Conv.bigstring ~value:Lmdb.Conv.bigstring env in
+    let vector_owners = Lmdb.Map.create Lmdb.Map.Nodup ~name:"vector_owners"
+      ~key:Lmdb.Conv.bigstring ~value:Lmdb.Conv.bigstring env in
     
     let db = {
       env; nodes; edges; node_meta; edge_meta; 
       outbound; inbound; intern_forward; intern_reverse; metadata;
+      vectors; vector_index; vector_owners;
     } in
     
     (try

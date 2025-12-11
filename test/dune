@@ -27,3 +27,8 @@
  (name test_adjacency)
  (modules test_adjacency)
  (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))
+
+(test
+ (name test_vectors)
+ (modules test_vectors)
+ (libraries alcotest gvecdb test_common bigstringaf unix))
