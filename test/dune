@@ -1,7 +1,7 @@
 (library
  (name test_common)
  (modules test_common)
- (libraries gvecdb test_schemas capnp stdint unix))
+ (libraries alcotest gvecdb test_schemas capnp stdint unix))
 
 (test
  (name test_basic)

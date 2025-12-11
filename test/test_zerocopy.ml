@@ -21,7 +21,6 @@ let measure_alloc f =
 let test_integer_field_no_message_copy () =
   with_temp_db "zerocopy" @@ fun db ->
   register_schemas db;
-  (* Create node with large data to make copy obvious *)
   let large_bio = String.make 1_000_000 'x' in
   let node = create_person db "Test" 42 "test@test.com" large_bio in
   
@@ -33,7 +32,6 @@ let test_integer_field_no_message_copy () =
     (fun a b -> Stdint.Uint32.compare a b = 0)) 
     "age value" (Stdint.Uint32.of_int 42) age;
   
-  (* Should be well under 100KB - just reader overhead, not 1MB message copy *)
   if alloc > 100_000.0 then
     fail (Printf.sprintf "Integer read allocated %.0f bytes (expected < 100KB)" alloc)
 
@@ -59,15 +57,13 @@ let test_text_field_copies () =
   let node = create_person db "Test" 42 "test@test.com" large_bio in
   
   let (bio_len, alloc) = measure_alloc (fun () ->
-    Gvecdb.get_node_props_capnp db node
+    ok_exn (Gvecdb.get_node_props_capnp db node
       SchemaReader.Reader.Person.of_message
-      (fun r -> String.length (SchemaReader.Reader.Person.bio_get r))
+      (fun r -> String.length (SchemaReader.Reader.Person.bio_get r)))
   ) in
   
   check int "bio length" 500_000 bio_len;
-  (* Text field should allocate ~500KB for the string copy *)
   if alloc < 400_000.0 then
-    (* This would be unexpected but OK - maybe capnp optimized *)
     Printf.printf "Note: text field allocated only %.0f bytes (expected ~500KB)\n" alloc
 
 (** {1 Zero-copy verification for edges} *)
@@ -75,22 +71,22 @@ let test_text_field_copies () =
 let test_edge_int_field_no_copy () =
   with_temp_db "zerocopy" @@ fun db ->
   register_schemas db;
-  let a = Gvecdb.create_node db "person" in
-  let b = Gvecdb.create_node db "person" in
+  let a = ok_exn (Gvecdb.create_node db "person") in
+  let b = ok_exn (Gvecdb.create_node db "person") in
   let large_context = String.make 1_000_000 'x' in
-  let edge = Gvecdb.create_edge db "knows" a b in
-  Gvecdb.set_edge_props_capnp db edge "knows"
+  let edge = ok_exn (Gvecdb.create_edge db "knows" a b) in
+  ok_exn (Gvecdb.set_edge_props_capnp db edge "knows"
     (fun builder ->
       SchemaBuilder.Builder.Knows.since_set builder 12345L;
       SchemaBuilder.Builder.Knows.context_set builder large_context;
       SchemaBuilder.Builder.Knows.strength_set builder 0.5)
     SchemaBuilder.Builder.Knows.init_root
-    SchemaBuilder.Builder.Knows.to_message;
+    SchemaBuilder.Builder.Knows.to_message);
   
   let (since, alloc) = measure_alloc (fun () ->
-    Gvecdb.get_edge_props_capnp db edge
+    ok_exn (Gvecdb.get_edge_props_capnp db edge
       SchemaReader.Reader.Knows.of_message
-      SchemaReader.Reader.Knows.since_get
+      SchemaReader.Reader.Knows.since_get)
   ) in
   
   check int64 "since value" 12345L since;
@@ -106,7 +102,6 @@ let test_read_inside_transaction_safe () =
   
   let result = Gvecdb.with_transaction_ro db (fun txn ->
     let name = get_person_name db ~txn node in
-    (* name should be a valid OCaml string, safe to use *)
     String.length name
   ) in
   
@@ -123,7 +118,6 @@ let test_multiple_reads_same_txn () =
     let name1 = get_person_name db ~txn node in
     let name2 = get_person_name db ~txn node in
     let name3 = get_person_name db ~txn node in
-    (* All reads should return same data *)
     (name1, name2, name3)
   ) in
   
@@ -141,14 +135,13 @@ let test_read_multiple_fields_one_call () =
   let node = create_person db "Alice" 30 "alice@test.com" large_bio in
   
   let (result, alloc) = measure_alloc (fun () ->
-    Gvecdb.get_node_props_capnp db node
+    ok_exn (Gvecdb.get_node_props_capnp db node
       SchemaReader.Reader.Person.of_message
       (fun r ->
         let name = SchemaReader.Reader.Person.name_get r in
         let age = SchemaReader.Reader.Person.age_get r in
         let email = SchemaReader.Reader.Person.email_get r in
-        (* Skip bio to avoid its allocation *)
-        (name, age, email))
+        (name, age, email)))
   ) in
   
   let (name, age, email) = result in
@@ -157,7 +150,6 @@ let test_read_multiple_fields_one_call () =
     (fun a b -> Stdint.Uint32.compare a b = 0)) "age" (Stdint.Uint32.of_int 30) age;
   check string "email" "alice@test.com" email;
   
-  (* Allocations should be for small strings only, not 100KB bio *)
   if alloc > 50_000.0 then
     fail (Printf.sprintf "Multi-field read allocated %.0f bytes" alloc)
 
@@ -168,33 +160,32 @@ let test_data_not_corrupted_after_update () =
   register_schemas db;
   let node = create_person db "Alice" 30 "alice@test.com" "bio" in
   
-  (* Read before update *)
   let name_before = get_person_name db node in
   check string "name before" "Alice" name_before;
   
-  (* Update *)
-  Gvecdb.set_node_props_capnp db node "person"
+  ok_exn (Gvecdb.set_node_props_capnp db node "person"
     (fun b ->
       SchemaBuilder.Builder.Person.name_set b "Bob";
       SchemaBuilder.Builder.Person.age_set_int_exn b 25)
     SchemaBuilder.Builder.Person.init_root
-    SchemaBuilder.Builder.Person.to_message;
+    SchemaBuilder.Builder.Person.to_message);
   
-  (* Read after update *)
   let name_after = get_person_name db node in
   check string "name after" "Bob" name_after;
   
-  (* Original string should still be valid (it's a copy) *)
   check string "original preserved" "Alice" name_before
 
 let test_read_after_delete_fails () =
   with_temp_db "zerocopy" @@ fun db ->
   register_schemas db;
   let node = create_person db "Alice" 30 "alice@test.com" "bio" in
-  Gvecdb.delete_node db node;
+  ok_exn (Gvecdb.delete_node db node);
   
-  check_raises "read deleted node fails" (Failure (Printf.sprintf "node not found: %Ld" node))
-    (fun () -> ignore (get_person_name db node))
+  match Gvecdb.get_node_props_capnp db node
+    SchemaReader.Reader.Person.of_message
+    SchemaReader.Reader.Person.name_get with
+  | Error (Gvecdb.Node_not_found _) -> ()
+  | _ -> fail "expected Node_not_found error"
 
 (** {1 Large data tests} *)
 
@@ -204,9 +195,9 @@ let test_large_property_roundtrip () =
   let large_bio = String.init 5_000_000 (fun i -> Char.chr (65 + (i mod 26))) in
   let node = create_person db "Test" 1 "test@test.com" large_bio in
   
-  let bio_back = Gvecdb.get_node_props_capnp db node
+  let bio_back = ok_exn (Gvecdb.get_node_props_capnp db node
     SchemaReader.Reader.Person.of_message
-    SchemaReader.Reader.Person.bio_get in
+    SchemaReader.Reader.Person.bio_get) in
   
   check int "bio length" 5_000_000 (String.length bio_back);
   check string "bio content matches" large_bio bio_back
@@ -216,7 +207,6 @@ let test_many_small_reads () =
   register_schemas db;
   let node = create_person db "Alice" 30 "alice@test.com" "bio" in
   
-  (* Many rapid reads should not leak memory *)
   let initial_words = (Gc.stat ()).live_words in
   for _ = 1 to 1000 do
     ignore (get_person_name db node)
@@ -224,7 +214,6 @@ let test_many_small_reads () =
   Gc.full_major ();
   let final_words = (Gc.stat ()).live_words in
   
-  (* Allow some growth but not proportional to read count *)
   let growth = final_words - initial_words in
   if growth > 100_000 then
     fail (Printf.sprintf "Memory grew by %d words over 1000 reads" growth)
@@ -265,4 +254,3 @@ let () =
     "consistency", consistency_tests;
     "large_data", large_data_tests;
   ]
-

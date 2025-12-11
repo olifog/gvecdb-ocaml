@@ -49,63 +49,73 @@ let get_edge_props_capnp db ?txn edge_id of_message read_fn =
 (** {1 edge/node info retrieval} *)
 
 (** get edge info *)
-let get_edge_info (db : t) ?txn (edge_id : edge_id) : edge_info option =
-  match Props_capnp.get_edge_meta db ?txn edge_id with
-  | None -> None
-  | Some (intern_id, src, dst) ->
-      let edge_type = Store.unintern db ?txn intern_id in
-      Some { id = edge_id; edge_type; src; dst }
+let get_edge_info (db : t) ?txn (edge_id : edge_id) : (edge_info, error) result =
+  let* (intern_id, src, dst) = Props_capnp.get_edge_meta db ?txn edge_id in
+  try
+    let edge_type = Store.unintern db ?txn intern_id in
+    Ok { id = edge_id; edge_type; src; dst }
+  with Not_found | Lmdb.Not_found -> 
+    Error (Corrupted_data "edge type intern_id not found in reverse lookup")
 
 (** get node info *)
-let get_node_info (db : t) ?txn (node_id : node_id) : node_info option =
-  match Props_capnp.get_node_meta db ?txn node_id with
-  | None -> None
-  | Some intern_id ->
-      let node_type = Store.unintern db ?txn intern_id in
-      Some { id = node_id; node_type }
+let get_node_info (db : t) ?txn (node_id : node_id) : (node_info, error) result =
+  let* intern_id = Props_capnp.get_node_meta db ?txn node_id in
+  try
+    let node_type = Store.unintern db ?txn intern_id in
+    Ok { id = node_id; node_type }
+  with Not_found | Lmdb.Not_found ->
+    Error (Corrupted_data "node type intern_id not found in reverse lookup")
 
 (** {1 node operations} *)
 
 (** create a new node with the given type *)
-let create_node (db : t) ?txn (node_type : string) : node_id =
-  let intern_id = Store.intern db ?txn node_type in
-  let node_id = Store.get_next_id db ?txn Metadata.next_node_id in
-  let key = Keys.encode_id_bs node_id in
-  Lmdb.Map.set db.node_meta ?txn key (Keys.encode_id_bs intern_id);
-  Lmdb.Map.set db.nodes ?txn key Store.empty_bigstring;
-  node_id
+let create_node (db : t) ?txn (node_type : string) : (node_id, error) result =
+  let* intern_id = Store.intern db ?txn node_type in
+  wrap_lmdb_exn (fun () ->
+    let node_id = Store.get_next_id db ?txn Metadata.next_node_id in
+    let key = Keys.encode_id_bs node_id in
+    Lmdb.Map.set db.node_meta ?txn key (Keys.encode_id_bs intern_id);
+    Lmdb.Map.set db.nodes ?txn key Store.empty_bigstring;
+    node_id)
 
 (** check if a node exists *)
-let node_exists (db : t) ?txn (node_id : node_id) : bool =
+let node_exists (db : t) ?txn (node_id : node_id) : (bool, error) result =
   try
     let _ = Lmdb.Map.get db.node_meta ?txn (Keys.encode_id_bs node_id) in
-    true
-  with Not_found -> false
+    Ok true
+  with 
+  | Not_found | Lmdb.Not_found -> Ok false
+  | Lmdb.Map_full -> Error Storage_full
+  | Lmdb.Error code -> Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code))
 
 (** {1 edge operations} *)
 
 (** create a new edge with the given type, source and destination nodes *)
-let create_edge (db : t) ?txn (edge_type : string) (src : node_id) (dst : node_id) : edge_id =
-  let intern_id = Store.intern db ?txn edge_type in
-  let edge_id = Store.get_next_id db ?txn Metadata.next_edge_id in
-  let key = Keys.encode_id_bs edge_id in
-  Lmdb.Map.set db.edge_meta ?txn key (Keys.encode_edge_meta ~type_id:intern_id ~src ~dst);
-  Lmdb.Map.set db.edges ?txn key Store.empty_bigstring;
-  let outbound_key = Keys.encode_adjacency_bs ~node_id:src ~intern_id ~opposite_id:dst ~edge_id in
-  let inbound_key = Keys.encode_adjacency_bs ~node_id:dst ~intern_id ~opposite_id:src ~edge_id in
-  Lmdb.Map.set db.outbound ?txn outbound_key Store.empty_bigstring;
-  Lmdb.Map.set db.inbound ?txn inbound_key Store.empty_bigstring;
-  edge_id
+let create_edge (db : t) ?txn (edge_type : string) (src : node_id) (dst : node_id) : (edge_id, error) result =
+  let* intern_id = Store.intern db ?txn edge_type in
+  wrap_lmdb_exn (fun () ->
+    let edge_id = Store.get_next_id db ?txn Metadata.next_edge_id in
+    let key = Keys.encode_id_bs edge_id in
+    Lmdb.Map.set db.edge_meta ?txn key (Keys.encode_edge_meta ~type_id:intern_id ~src ~dst);
+    Lmdb.Map.set db.edges ?txn key Store.empty_bigstring;
+    let outbound_key = Keys.encode_adjacency_bs ~node_id:src ~intern_id ~opposite_id:dst ~edge_id in
+    let inbound_key = Keys.encode_adjacency_bs ~node_id:dst ~intern_id ~opposite_id:src ~edge_id in
+    Lmdb.Map.set db.outbound ?txn outbound_key Store.empty_bigstring;
+    Lmdb.Map.set db.inbound ?txn inbound_key Store.empty_bigstring;
+    edge_id)
 
 (** check if an edge exists *)
-let edge_exists (db : t) ?txn (edge_id : edge_id) : bool =
+let edge_exists (db : t) ?txn (edge_id : edge_id) : (bool, error) result =
   try
     let _ = Lmdb.Map.get db.edge_meta ?txn (Keys.encode_id_bs edge_id) in
-    true
-  with Not_found -> false
+    Ok true
+  with 
+  | Not_found | Lmdb.Not_found -> Ok false
+  | Lmdb.Map_full -> Error Storage_full
+  | Lmdb.Error code -> Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code))
 
 (** delete an edge *)
-let delete_edge (db : t) ?txn (edge_id : edge_id) : unit =
+let delete_edge (db : t) ?txn (edge_id : edge_id) : (unit, error) result =
   let key = Keys.encode_id_bs edge_id in
   try
     let meta = Lmdb.Map.get db.edge_meta ?txn key in
@@ -115,68 +125,79 @@ let delete_edge (db : t) ?txn (edge_id : edge_id) : unit =
     let outbound_key = Keys.encode_adjacency_bs ~node_id:src ~intern_id ~opposite_id:dst ~edge_id in
     let inbound_key = Keys.encode_adjacency_bs ~node_id:dst ~intern_id ~opposite_id:src ~edge_id in
     Lmdb.Map.remove db.outbound ?txn outbound_key;
-    Lmdb.Map.remove db.inbound ?txn inbound_key
-  with Not_found -> ()
+    Lmdb.Map.remove db.inbound ?txn inbound_key;
+    Ok ()
+  with 
+  | Not_found | Lmdb.Not_found -> Error (Edge_not_found edge_id)
+  | Lmdb.Map_full -> Error Storage_full
+  | Lmdb.Error code -> Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code))
+  | Invalid_argument msg -> Error (Corrupted_data msg)
 
 (** {1 adjacency queries} *)
 
 type direction = Outbound | Inbound
 
 (** scan the adjacency index for edges with the given prefix *)
-let scan_adjacency_index (db : t) ?txn ~direction ~node_id (map : (bigstring, bigstring, [`Uni]) Lmdb.Map.t) (prefix : bigstring) : edge_info list =
+let scan_adjacency_index (db : t) ?txn ~direction ~node_id (map : (bigstring, bigstring, [`Uni]) Lmdb.Map.t) (prefix : bigstring) : (edge_info list, error) result =
   let prefix_len = Bigstring.length prefix in
   let txn_ro = Option.map (fun t -> (t :> [`Read] Lmdb.Txn.t)) txn in
-  let tuples = Lmdb.Cursor.go Lmdb.Ro ?txn:txn_ro map (fun cursor ->
-    let rec collect acc =
+  try
+    let tuples = Lmdb.Cursor.go Lmdb.Ro ?txn:txn_ro map (fun cursor ->
+      let rec collect acc =
+        try
+          let (key, _) = Lmdb.Cursor.next cursor in
+          if Bigstring.length key >= prefix_len && Keys.bigstring_has_prefix ~prefix key then
+            let (_, intern_id, opposite_id, edge_id) = Keys.decode_adjacency_bs key in
+            collect ((edge_id, intern_id, opposite_id) :: acc)
+          else
+            acc
+        with Lmdb.Not_found -> acc
+      in
       try
-        let (key, _) = Lmdb.Cursor.next cursor in
+        let (key, _) = Lmdb.Cursor.seek_range cursor prefix in
         if Bigstring.length key >= prefix_len && Keys.bigstring_has_prefix ~prefix key then
           let (_, intern_id, opposite_id, edge_id) = Keys.decode_adjacency_bs key in
-          collect ((edge_id, intern_id, opposite_id) :: acc)
+          List.rev (collect [(edge_id, intern_id, opposite_id)])
         else
-          acc
-      with Lmdb.Not_found -> acc
-    in
-    try
-      let (key, _) = Lmdb.Cursor.seek_range cursor prefix in
-      if Bigstring.length key >= prefix_len && Keys.bigstring_has_prefix ~prefix key then
-        let (_, intern_id, opposite_id, edge_id) = Keys.decode_adjacency_bs key in
-        List.rev (collect [(edge_id, intern_id, opposite_id)])
-      else
-        []
-    with Lmdb.Not_found -> []
-  ) in
-  List.map (fun (edge_id, intern_id, opposite_id) ->
-    let edge_type = Store.unintern db ?txn intern_id in
-    let (src, dst) = match direction with
-      | Outbound -> (node_id, opposite_id)
-      | Inbound -> (opposite_id, node_id)
-    in
-    { id = edge_id; edge_type; src; dst }
-  ) tuples
+          []
+      with Lmdb.Not_found -> []
+    ) in
+    Ok (List.map (fun (edge_id, intern_id, opposite_id) ->
+      let edge_type = Store.unintern db ?txn intern_id in
+      let (src, dst) = match direction with
+        | Outbound -> (node_id, opposite_id)
+        | Inbound -> (opposite_id, node_id)
+      in
+      { id = edge_id; edge_type; src; dst }
+    ) tuples)
+  with
+  | Not_found | Lmdb.Not_found -> Error (Corrupted_data "intern_id not found in reverse lookup")
+  | Lmdb.Map_full -> Error Storage_full
+  | Lmdb.Error code -> Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code))
+  | Invalid_argument msg -> Error (Corrupted_data msg)
 
 (** get all outbound edges from a node *)
-let get_outbound_edges (db : t) ?txn (node_id : node_id) : edge_info list =
+let get_outbound_edges (db : t) ?txn (node_id : node_id) : (edge_info list, error) result =
   let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
   scan_adjacency_index db ?txn ~direction:Outbound ~node_id db.outbound prefix
 
 (** get all inbound edges to a node *)
-let get_inbound_edges (db : t) ?txn (node_id : node_id) : edge_info list =
+let get_inbound_edges (db : t) ?txn (node_id : node_id) : (edge_info list, error) result =
   let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
   scan_adjacency_index db ?txn ~direction:Inbound ~node_id db.inbound prefix
 
 (** get all outbound edges of a specific type from a node *)
-let get_outbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : string) : edge_info list =
+let get_outbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : string) : (edge_info list, error) result =
   match Store.lookup_intern db ?txn edge_type with
-  | None -> []  (* type not interned means no edges of this type exist *)
+  | None -> Ok []  (* type not interned means no edges of this type exist *)
   | Some intern_id ->
       let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
       scan_adjacency_index db ?txn ~direction:Outbound ~node_id db.outbound prefix
 
 (** get all inbound edges of a specific type to a node *)
-let get_inbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : string) : edge_info list =
+let get_inbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : string) : (edge_info list, error) result =
   match Store.lookup_intern db ?txn edge_type with
-  | None -> []  (* type not interned means no edges of this type exist *)
+  | None -> Ok []  (* type not interned means no edges of this type exist *)
   | Some intern_id ->
       let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
       scan_adjacency_index db ?txn ~direction:Inbound ~node_id db.inbound prefix
@@ -184,13 +205,25 @@ let get_inbound_edges_by_type (db : t) ?txn (node_id : node_id) (edge_type : str
 (** {1 node deletion} *)
 
 (** delete a node and cascade delete all connected edges *)
-let delete_node (db : t) ?txn (node_id : node_id) : unit =
+let delete_node (db : t) ?txn (node_id : node_id) : (unit, error) result =
   let key = Keys.encode_id_bs node_id in
-  try
-    let outbound_edges = get_outbound_edges db ?txn node_id in
-    let inbound_edges = get_inbound_edges db ?txn node_id in
-    List.iter (fun (edge_info : edge_info) -> delete_edge db ?txn edge_info.id) outbound_edges;
-    List.iter (fun (edge_info : edge_info) -> delete_edge db ?txn edge_info.id) inbound_edges;
-    Lmdb.Map.remove db.node_meta ?txn key;
-    Lmdb.Map.remove db.nodes ?txn key
-  with Not_found -> ()
+  match node_exists db ?txn node_id with
+  | Error e -> Error e
+  | Ok false -> Error (Node_not_found node_id)
+  | Ok true ->
+    let* outbound_edges = get_outbound_edges db ?txn node_id in
+    let* inbound_edges = get_inbound_edges db ?txn node_id in
+    let rec delete_edges edges =
+      match edges with
+      | [] -> Ok ()
+      | edge :: rest ->
+        match delete_edge db ?txn edge.id with
+        | Ok () -> delete_edges rest
+        | Error (Edge_not_found _) -> delete_edges rest
+        | Error e -> Error e
+    in
+    let* () = delete_edges outbound_edges in
+    let* () = delete_edges inbound_edges in
+    wrap_lmdb_exn (fun () ->
+      Lmdb.Map.remove db.node_meta ?txn key;
+      Lmdb.Map.remove db.nodes ?txn key)

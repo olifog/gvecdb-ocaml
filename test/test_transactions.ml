@@ -9,35 +9,34 @@ let test_transaction_commits () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let result = Gvecdb.with_transaction db (fun txn ->
-    let node = Gvecdb.create_node db ~txn "person" in
+    let node = ok_exn (Gvecdb.create_node db ~txn "person") in
     node
   ) in
   match result with
   | Some node_id ->
-    check bool "node exists after commit" true (Gvecdb.node_exists db node_id)
+    check bool "node exists after commit" true (ok_exn (Gvecdb.node_exists db node_id))
   | None -> fail "transaction should have committed"
 
 let test_transaction_rollback_on_exception () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let node_before = Gvecdb.create_node db "person" in
+  let node_before = ok_exn (Gvecdb.create_node db "person") in
   let next_expected = Int64.add node_before 1L in
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      let _ = Gvecdb.create_node db ~txn "person" in
-      let _ = Gvecdb.create_node db ~txn "person" in
+      let _ = ok_exn (Gvecdb.create_node db ~txn "person") in
+      let _ = ok_exn (Gvecdb.create_node db ~txn "person") in
       failwith "simulated error"
     ) in ()
   with Failure _ -> ());
-  (* After rollback, nodes created in transaction should not exist *)
-  check bool "rolled back node 1" false (Gvecdb.node_exists db next_expected);
-  check bool "rolled back node 2" false (Gvecdb.node_exists db (Int64.add next_expected 1L))
+  check bool "rolled back node 1" false (ok_exn (Gvecdb.node_exists db next_expected));
+  check bool "rolled back node 2" false (ok_exn (Gvecdb.node_exists db (Int64.add next_expected 1L)))
 
 let test_transaction_abort () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let result = Gvecdb.with_transaction db (fun txn ->
-    let _ = Gvecdb.create_node db ~txn "person" in
+    let _ = ok_exn (Gvecdb.create_node db ~txn "person") in
     Gvecdb.abort_transaction txn
   ) in
   check (option reject) "returns None on abort" None result
@@ -45,9 +44,9 @@ let test_transaction_abort () =
 let test_transaction_abort_ro () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let _ = Gvecdb.create_node db "person" in
+  let _ = ok_exn (Gvecdb.create_node db "person") in
   let result = Gvecdb.with_transaction_ro db (fun txn ->
-    let _ = Gvecdb.node_exists db ~txn 0L in
+    let _ = ok_exn (Gvecdb.node_exists db ~txn 0L) in
     Gvecdb.abort_transaction txn
   ) in
   check (option reject) "ro abort returns None" None result
@@ -57,87 +56,77 @@ let test_transaction_abort_ro () =
 let test_edge_creation_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  (* Create nodes outside transaction *)
-  let a = Gvecdb.create_node db "person" in
-  let b = Gvecdb.create_node db "person" in
-  (* Try to create edge in a failing transaction *)
+  let a = ok_exn (Gvecdb.create_node db "person") in
+  let b = ok_exn (Gvecdb.create_node db "person") in
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      let _ = Gvecdb.create_edge db ~txn "knows" a b in
+      let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" a b) in
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Edge should not exist, adjacency should be empty *)
   check int "no outbound edges after rollback" 0 
-    (List.length (Gvecdb.get_outbound_edges db a));
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db a)));
   check int "no inbound edges after rollback" 0 
-    (List.length (Gvecdb.get_inbound_edges db b))
+    (List.length (ok_exn (Gvecdb.get_inbound_edges db b)))
 
 let test_multiple_edges_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let nodes = List.init 5 (fun _ -> Gvecdb.create_node db "person") in
+  let nodes = List.init 5 (fun _ -> ok_exn (Gvecdb.create_node db "person")) in
   let a = List.hd nodes in
-  (* Try to create multiple edges in a failing transaction *)
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
       List.iter (fun b -> 
         if a <> b then 
-          let _ = Gvecdb.create_edge db ~txn "knows" a b in ()
+          let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" a b) in ()
       ) nodes;
       failwith "abort"
     ) in ()
   with Failure _ -> ());
   check int "no outbound edges after rollback" 0 
-    (List.length (Gvecdb.get_outbound_edges db a))
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db a)))
 
 let test_edge_deletion_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let a = Gvecdb.create_node db "person" in
-  let b = Gvecdb.create_node db "person" in
-  let edge = Gvecdb.create_edge db "knows" a b in
-  (* Try to delete edge in a failing transaction *)
+  let a = ok_exn (Gvecdb.create_node db "person") in
+  let b = ok_exn (Gvecdb.create_node db "person") in
+  let edge = ok_exn (Gvecdb.create_edge db "knows" a b) in
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      Gvecdb.delete_edge db ~txn edge;
+      ok_exn (Gvecdb.delete_edge db ~txn edge);
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Edge should still exist *)
-  check bool "edge still exists after rollback" true (Gvecdb.edge_exists db edge);
+  check bool "edge still exists after rollback" true (ok_exn (Gvecdb.edge_exists db edge));
   check int "outbound edge still exists" 1 
-    (List.length (Gvecdb.get_outbound_edges db a))
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db a)))
 
 (** {1 Node deletion rollback tests} *)
 
 let test_node_deletion_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let node = Gvecdb.create_node db "person" in
-  (* Try to delete node in a failing transaction *)
+  let node = ok_exn (Gvecdb.create_node db "person") in
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      Gvecdb.delete_node db ~txn node;
+      ok_exn (Gvecdb.delete_node db ~txn node);
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Node should still exist *)
-  check bool "node still exists after rollback" true (Gvecdb.node_exists db node)
+  check bool "node still exists after rollback" true (ok_exn (Gvecdb.node_exists db node))
 
 let test_node_with_props_deletion_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let node = create_person db "Alice" 30 "alice@test.com" "bio" in
-  (* Try to delete node in a failing transaction *)
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      Gvecdb.delete_node db ~txn node;
+      ok_exn (Gvecdb.delete_node db ~txn node);
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Node and props should still exist *)
-  check bool "node still exists" true (Gvecdb.node_exists db node);
+  check bool "node still exists" true (ok_exn (Gvecdb.node_exists db node));
   check string "props still exist" "Alice" (get_person_name db node)
 
 (** {1 Property rollback tests} *)
@@ -145,70 +134,63 @@ let test_node_with_props_deletion_rollback () =
 let test_props_creation_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  (* Create node without props first *)
-  let node = Gvecdb.create_node db "person" in
-  (* Try to set props in a failing transaction *)
+  let node = ok_exn (Gvecdb.create_node db "person") in
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      Gvecdb.set_node_props_capnp db ~txn node "person"
+      ok_exn (Gvecdb.set_node_props_capnp db ~txn node "person"
         (fun b ->
           SchemaBuilder.Builder.Person.name_set b "Alice";
           SchemaBuilder.Builder.Person.age_set_int_exn b 30;
           SchemaBuilder.Builder.Person.email_set b "alice@test.com";
           SchemaBuilder.Builder.Person.bio_set b "bio")
         SchemaBuilder.Builder.Person.init_root
-        SchemaBuilder.Builder.Person.to_message;
+        SchemaBuilder.Builder.Person.to_message);
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Props should not exist - reading should fail or return empty *)
-  check bool "node exists but has no props" true (Gvecdb.node_exists db node)
+  check bool "node exists but has no props" true (ok_exn (Gvecdb.node_exists db node))
 
 let test_props_update_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let node = create_person db "Alice" 30 "alice@test.com" "bio" in
-  (* Try to update props in a failing transaction *)
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      Gvecdb.set_node_props_capnp db ~txn node "person"
+      ok_exn (Gvecdb.set_node_props_capnp db ~txn node "person"
         (fun b ->
           SchemaBuilder.Builder.Person.name_set b "Bob";
           SchemaBuilder.Builder.Person.age_set_int_exn b 99;
           SchemaBuilder.Builder.Person.email_set b "bob@test.com";
           SchemaBuilder.Builder.Person.bio_set b "new bio")
         SchemaBuilder.Builder.Person.init_root
-        SchemaBuilder.Builder.Person.to_message;
+        SchemaBuilder.Builder.Person.to_message);
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Props should be unchanged *)
   check string "name unchanged after rollback" "Alice" (get_person_name db node);
   check int "age unchanged after rollback" 30 (Stdint.Uint32.to_int (get_person_age db node))
 
 let test_edge_props_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let a = Gvecdb.create_node db "person" in
-  let b = Gvecdb.create_node db "person" in
+  let a = ok_exn (Gvecdb.create_node db "person") in
+  let b = ok_exn (Gvecdb.create_node db "person") in
   let edge = create_knows_edge db a b 2020L "work" 0.5 in
-  (* Try to update edge props in a failing transaction *)
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      Gvecdb.set_edge_props_capnp db ~txn edge "knows"
+      ok_exn (Gvecdb.set_edge_props_capnp db ~txn edge "knows"
         (fun builder ->
           SchemaBuilder.Builder.Knows.since_set builder 2024L;
           SchemaBuilder.Builder.Knows.context_set builder "changed";
           SchemaBuilder.Builder.Knows.strength_set builder 1.0)
         SchemaBuilder.Builder.Knows.init_root
-        SchemaBuilder.Builder.Knows.to_message;
+        SchemaBuilder.Builder.Knows.to_message);
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Edge props should be unchanged *)
-  let since = Gvecdb.get_edge_props_capnp db edge
+  let since = ok_exn (Gvecdb.get_edge_props_capnp db edge
     SchemaReader.Reader.Knows.of_message
-    SchemaReader.Reader.Knows.since_get in
+    SchemaReader.Reader.Knows.since_get) in
   check (Alcotest.int64) "edge props unchanged after rollback" 2020L since
 
 (** {1 Complex rollback scenarios} *)
@@ -216,53 +198,45 @@ let test_edge_props_rollback () =
 let test_complex_graph_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  (* Create initial graph *)
   let alice = create_person db "Alice" 30 "alice@test.com" "bio" in
   let bob = create_person db "Bob" 25 "bob@test.com" "bio" in
   let _ = create_knows_edge db alice bob 2020L "work" 0.5 in
-  (* Try complex modifications in a failing transaction *)
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
-      (* Create new node *)
-      let charlie = Gvecdb.create_node db ~txn "person" in
-      (* Create new edges *)
-      let _ = Gvecdb.create_edge db ~txn "knows" bob charlie in
-      let _ = Gvecdb.create_edge db ~txn "knows" alice charlie in
-      (* Update existing props *)
-      Gvecdb.set_node_props_capnp db ~txn alice "person"
+      let charlie = ok_exn (Gvecdb.create_node db ~txn "person") in
+      let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" bob charlie) in
+      let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" alice charlie) in
+      ok_exn (Gvecdb.set_node_props_capnp db ~txn alice "person"
         (fun b ->
           SchemaBuilder.Builder.Person.name_set b "Alice Modified";
           SchemaBuilder.Builder.Person.age_set_int_exn b 31;
           SchemaBuilder.Builder.Person.email_set b "alice2@test.com";
           SchemaBuilder.Builder.Person.bio_set b "new bio")
         SchemaBuilder.Builder.Person.init_root
-        SchemaBuilder.Builder.Person.to_message;
+        SchemaBuilder.Builder.Person.to_message);
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* Verify nothing changed *)
   check string "alice name unchanged" "Alice" (get_person_name db alice);
-  check int "alice has 1 outbound" 1 (List.length (Gvecdb.get_outbound_edges db alice));
-  check int "bob has 0 outbound" 0 (List.length (Gvecdb.get_outbound_edges db bob))
+  check int "alice has 1 outbound" 1 (List.length (ok_exn (Gvecdb.get_outbound_edges db alice)));
+  check int "bob has 0 outbound" 0 (List.length (ok_exn (Gvecdb.get_outbound_edges db bob)))
 
 let test_partial_operations_rollback () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let initial_node = Gvecdb.create_node db "person" in
+  let initial_node = ok_exn (Gvecdb.create_node db "person") in
   let next_id = Int64.add initial_node 1L in
-  (* Create 3 nodes, fail after creating them *)
   (try
     let _ = Gvecdb.with_transaction db (fun txn ->
       for _ = 1 to 3 do
-        let _ = Gvecdb.create_node db ~txn "person" in ()
+        let _ = ok_exn (Gvecdb.create_node db ~txn "person") in ()
       done;
       failwith "abort"
     ) in ()
   with Failure _ -> ());
-  (* None of the 3 nodes should exist *)
-  check bool "node 1 not exists" false (Gvecdb.node_exists db next_id);
-  check bool "node 2 not exists" false (Gvecdb.node_exists db (Int64.add next_id 1L));
-  check bool "node 3 not exists" false (Gvecdb.node_exists db (Int64.add next_id 2L))
+  check bool "node 1 not exists" false (ok_exn (Gvecdb.node_exists db next_id));
+  check bool "node 2 not exists" false (ok_exn (Gvecdb.node_exists db (Int64.add next_id 1L)));
+  check bool "node 3 not exists" false (ok_exn (Gvecdb.node_exists db (Int64.add next_id 2L)))
 
 (** {1 Transaction isolation} *)
 
@@ -270,9 +244,8 @@ let test_read_own_writes () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let result = Gvecdb.with_transaction db (fun txn ->
-    let node = Gvecdb.create_node db ~txn "person" in
-    (* Should see own write within same transaction *)
-    let exists = Gvecdb.node_exists db ~txn node in
+    let node = ok_exn (Gvecdb.create_node db ~txn "person") in
+    let exists = ok_exn (Gvecdb.node_exists db ~txn node) in
     (node, exists)
   ) in
   match result with
@@ -283,11 +256,10 @@ let test_edge_created_in_txn_visible () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let result = Gvecdb.with_transaction db (fun txn ->
-    let a = Gvecdb.create_node db ~txn "person" in
-    let b = Gvecdb.create_node db ~txn "person" in
-    let e = Gvecdb.create_edge db ~txn "knows" a b in
-    (* Should see edge in outbound query within same txn *)
-    let outbound = Gvecdb.get_outbound_edges db ~txn a in
+    let a = ok_exn (Gvecdb.create_node db ~txn "person") in
+    let b = ok_exn (Gvecdb.create_node db ~txn "person") in
+    let e = ok_exn (Gvecdb.create_edge db ~txn "knows" a b) in
+    let outbound = ok_exn (Gvecdb.get_outbound_edges db ~txn a) in
     (e, List.length outbound)
   ) in
   match result with
@@ -312,14 +284,14 @@ let test_multiple_nodes_in_txn () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let result = Gvecdb.with_transaction db (fun txn ->
-    let nodes = List.init 10 (fun _ -> Gvecdb.create_node db ~txn "person") in
+    let nodes = List.init 10 (fun _ -> ok_exn (Gvecdb.create_node db ~txn "person")) in
     nodes
   ) in
   match result with
   | Some nodes ->
     check int "10 nodes created" 10 (List.length nodes);
     List.iter (fun n -> 
-      check bool "node exists" true (Gvecdb.node_exists db n)
+      check bool "node exists" true (ok_exn (Gvecdb.node_exists db n))
     ) nodes
   | None -> fail "transaction failed"
 
@@ -327,30 +299,28 @@ let test_create_and_delete_in_txn () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let result = Gvecdb.with_transaction db (fun txn ->
-    let node = Gvecdb.create_node db ~txn "person" in
-    Gvecdb.delete_node db ~txn node;
+    let node = ok_exn (Gvecdb.create_node db ~txn "person") in
+    ok_exn (Gvecdb.delete_node db ~txn node);
     node
   ) in
   match result with
   | Some node_id ->
-    check bool "deleted node not exists" false (Gvecdb.node_exists db node_id)
+    check bool "deleted node not exists" false (ok_exn (Gvecdb.node_exists db node_id))
   | None -> fail "transaction failed"
 
 let test_complex_graph_in_txn () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
   let result = Gvecdb.with_transaction db (fun txn ->
-    (* Create a small graph: A -> B -> C, A -> C *)
-    let a = Gvecdb.create_node db ~txn "person" in
-    let b = Gvecdb.create_node db ~txn "person" in
-    let c = Gvecdb.create_node db ~txn "person" in
-    let _ = Gvecdb.create_edge db ~txn "knows" a b in
-    let _ = Gvecdb.create_edge db ~txn "knows" b c in
-    let _ = Gvecdb.create_edge db ~txn "knows" a c in
-    (* Query within transaction *)
-    let a_out = Gvecdb.get_outbound_edges db ~txn a in
-    let b_out = Gvecdb.get_outbound_edges db ~txn b in
-    let c_in = Gvecdb.get_inbound_edges db ~txn c in
+    let a = ok_exn (Gvecdb.create_node db ~txn "person") in
+    let b = ok_exn (Gvecdb.create_node db ~txn "person") in
+    let c = ok_exn (Gvecdb.create_node db ~txn "person") in
+    let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" a b) in
+    let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" b c) in
+    let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" a c) in
+    let a_out = ok_exn (Gvecdb.get_outbound_edges db ~txn a) in
+    let b_out = ok_exn (Gvecdb.get_outbound_edges db ~txn b) in
+    let c_in = ok_exn (Gvecdb.get_inbound_edges db ~txn c) in
     (List.length a_out, List.length b_out, List.length c_in)
   ) in
   match result with
@@ -377,11 +347,10 @@ let test_ro_transaction_sees_committed () =
 let test_multiple_ro_transactions () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  let node = Gvecdb.create_node db "person" in
-  (* Run multiple sequential RO transactions *)
+  let node = ok_exn (Gvecdb.create_node db "person") in
   for _ = 1 to 5 do
     match Gvecdb.with_transaction_ro db (fun txn ->
-      Gvecdb.node_exists db ~txn node
+      ok_exn (Gvecdb.node_exists db ~txn node)
     ) with
     | Some exists -> check bool "node visible in ro" true exists
     | None -> fail "ro transaction failed"
@@ -394,14 +363,14 @@ let test_props_update_in_txn () =
   register_schemas db;
   let node = create_person db "Alice" 30 "alice@test.com" "bio" in
   let result = Gvecdb.with_transaction db (fun txn ->
-    Gvecdb.set_node_props_capnp db ~txn node "person"
+    ok_exn (Gvecdb.set_node_props_capnp db ~txn node "person"
       (fun b ->
         SchemaBuilder.Builder.Person.name_set b "Alice Updated";
         SchemaBuilder.Builder.Person.age_set_int_exn b 31;
         SchemaBuilder.Builder.Person.email_set b "alice@test.com";
         SchemaBuilder.Builder.Person.bio_set b "bio")
       SchemaBuilder.Builder.Person.init_root
-      SchemaBuilder.Builder.Person.to_message;
+      SchemaBuilder.Builder.Person.to_message);
     get_person_name db ~txn node
   ) in
   match result with
@@ -415,11 +384,9 @@ let test_props_update_in_txn () =
 let test_concurrent_ro_transactions () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  (* Create test data *)
   let nodes = List.init 100 (fun i -> 
     create_person db (Printf.sprintf "Person%d" i) i "email" "bio"
   ) in
-  (* Run multiple RO transactions in parallel *)
   let num_domains = 4 in
   let iterations = 50 in
   let results = Array.make num_domains true in
@@ -427,9 +394,8 @@ let test_concurrent_ro_transactions () =
     Domain.spawn (fun () ->
       for _ = 1 to iterations do
         match Gvecdb.with_transaction_ro db (fun txn ->
-          (* Read all nodes *)
           List.for_all (fun node -> 
-            Gvecdb.node_exists db ~txn node
+            ok_exn (Gvecdb.node_exists db ~txn node)
           ) nodes
         ) with
         | Some all_exist -> 
@@ -447,49 +413,40 @@ let test_concurrent_ro_transactions () =
 let test_concurrent_ro_sees_consistent_snapshot () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  (* Create initial data *)
   let alice = create_person db "Alice" 30 "alice@test.com" "bio" in
   let bob = create_person db "Bob" 25 "bob@test.com" "bio" in
-  let _ = Gvecdb.create_edge db "knows" alice bob in
-  (* Start a RO transaction *)
+  let _ = ok_exn (Gvecdb.create_edge db "knows" alice bob) in
   let ro_result = ref None in
   let ro_done = Atomic.make false in
   let writer_started = Atomic.make false in
-  (* RO transaction in a domain *)
   let ro_domain = Domain.spawn (fun () ->
     Gvecdb.with_transaction_ro db (fun txn ->
-      (* Signal that we've started *)
       Atomic.set writer_started true;
-      (* Wait a bit for writer to potentially modify *)
       Unix.sleepf 0.01;
-      (* Read the data - should see original *)
       let name = get_person_name db ~txn alice in
-      let edges = Gvecdb.get_outbound_edges db ~txn alice in
+      let edges = ok_exn (Gvecdb.get_outbound_edges db ~txn alice) in
       ro_result := Some (name, List.length edges);
       Atomic.set ro_done true;
       ()
     )
   ) in
-  (* Wait for RO to start *)
   while not (Atomic.get writer_started) do
     Unix.sleepf 0.001
   done;
-  (* Writer modifies data after RO started *)
   let _ = Gvecdb.with_transaction db (fun txn ->
-    Gvecdb.set_node_props_capnp db ~txn alice "person"
+    ok_exn (Gvecdb.set_node_props_capnp db ~txn alice "person"
       (fun b ->
         SchemaBuilder.Builder.Person.name_set b "Alice Modified";
         SchemaBuilder.Builder.Person.age_set_int_exn b 31;
         SchemaBuilder.Builder.Person.email_set b "alice@test.com";
         SchemaBuilder.Builder.Person.bio_set b "bio")
       SchemaBuilder.Builder.Person.init_root
-      SchemaBuilder.Builder.Person.to_message;
-    let charlie = Gvecdb.create_node db ~txn "person" in
-    let _ = Gvecdb.create_edge db ~txn "knows" alice charlie in
+      SchemaBuilder.Builder.Person.to_message);
+    let charlie = ok_exn (Gvecdb.create_node db ~txn "person") in
+    let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" alice charlie) in
     ()
   ) in
   let _ = Domain.join ro_domain in
-  (* RO should see original data (snapshot isolation) *)
   match !ro_result with
   | Some (name, edge_count) ->
     check string "RO sees original name" "Alice" name;
@@ -502,12 +459,11 @@ let test_concurrent_writes_serialized () =
   let counter = Atomic.make 0 in
   let num_domains = 4 in
   let iterations = 10 in
-  (* Each domain creates nodes *)
   let domains = Array.init num_domains (fun _ ->
     Domain.spawn (fun () ->
       for _ = 1 to iterations do
         match Gvecdb.with_transaction db (fun txn ->
-          let _ = Gvecdb.create_node db ~txn "person" in
+          let _ = ok_exn (Gvecdb.create_node db ~txn "person") in
           Atomic.incr counter;
           ()
         ) with
@@ -517,7 +473,6 @@ let test_concurrent_writes_serialized () =
     )
   ) in
   Array.iter Domain.join domains;
-  (* All writes should have succeeded *)
   check int "all writes succeeded" (num_domains * iterations) (Atomic.get counter)
 
 let test_writer_blocks_writer () =
@@ -526,67 +481,56 @@ let test_writer_blocks_writer () =
   let first_started = Atomic.make false in
   let first_done = Atomic.make false in
   let second_waited = Atomic.make false in
-  (* First writer holds transaction *)
   let d1 = Domain.spawn (fun () ->
     Gvecdb.with_transaction db (fun txn ->
-      let _ = Gvecdb.create_node db ~txn "person" in
+      let _ = ok_exn (Gvecdb.create_node db ~txn "person") in
       Atomic.set first_started true;
-      (* Hold the transaction *)
       Unix.sleepf 0.05;
       Atomic.set first_done true;
       ()
     )
   ) in
-  (* Wait for first writer to start *)
   while not (Atomic.get first_started) do
     Unix.sleepf 0.001
   done;
-  (* Second writer should block *)
   let d2 = Domain.spawn (fun () ->
     Gvecdb.with_transaction db (fun txn ->
-      (* Check if first was done when we got the lock *)
       if Atomic.get first_done then
         Atomic.set second_waited true;
-      let _ = Gvecdb.create_node db ~txn "person" in
+      let _ = ok_exn (Gvecdb.create_node db ~txn "person") in
       ()
     )
   ) in
   let _ = Domain.join d1 in
   let _ = Domain.join d2 in
-  (* Second writer should have waited for first *)
   check bool "second writer waited for first" true (Atomic.get second_waited)
 
 let test_concurrent_reads_during_write () =
   with_temp_db "txn" @@ fun db ->
   register_schemas db;
-  (* Create initial data *)
   let node = create_person db "Original" 1 "email" "bio" in
   let read_results = Array.make 10 "" in
   let writer_started = Atomic.make false in
   let writer_done = Atomic.make false in
-  (* Writer holds transaction *)
   let writer = Domain.spawn (fun () ->
     Gvecdb.with_transaction db (fun txn ->
-      Gvecdb.set_node_props_capnp db ~txn node "person"
+      ok_exn (Gvecdb.set_node_props_capnp db ~txn node "person"
         (fun b ->
           SchemaBuilder.Builder.Person.name_set b "Modified";
           SchemaBuilder.Builder.Person.age_set_int_exn b 2;
           SchemaBuilder.Builder.Person.email_set b "email";
           SchemaBuilder.Builder.Person.bio_set b "bio")
         SchemaBuilder.Builder.Person.init_root
-        SchemaBuilder.Builder.Person.to_message;
+        SchemaBuilder.Builder.Person.to_message);
       Atomic.set writer_started true;
-      (* Hold transaction *)
       Unix.sleepf 0.03;
       Atomic.set writer_done true;
       ()
     )
   ) in
-  (* Wait for writer to start *)
   while not (Atomic.get writer_started) do
     Unix.sleepf 0.001
   done;
-  (* Spawn readers while writer holds transaction *)
   let readers = Array.init 10 (fun i ->
     Domain.spawn (fun () ->
       match Gvecdb.with_transaction_ro db (fun txn ->
@@ -598,11 +542,9 @@ let test_concurrent_reads_during_write () =
   ) in
   Array.iter Domain.join readers;
   let _ = Domain.join writer in
-  (* All reads should see "Original" (before commit) *)
   Array.iteri (fun i result ->
     check string (Printf.sprintf "reader %d sees original" i) "Original" result
   ) read_results;
-  (* After commit, should see modified *)
   check string "after commit sees modified" "Modified" (get_person_name db node)
 
 let test_high_contention_scenario () =
@@ -614,12 +556,10 @@ let test_high_contention_scenario () =
   let domains = Array.init num_domains (fun i ->
     Domain.spawn (fun () ->
       for j = 1 to ops_per_domain do
-        (* Mix of reads and writes *)
         if j mod 3 = 0 then begin
-          (* Write *)
           match Gvecdb.with_transaction db (fun txn ->
-            let n = Gvecdb.create_node db ~txn "person" in
-            Gvecdb.set_node_props_capnp db ~txn n "person"
+            let n = ok_exn (Gvecdb.create_node db ~txn "person") in
+            ok_exn (Gvecdb.set_node_props_capnp db ~txn n "person"
               (fun b ->
                 SchemaBuilder.Builder.Person.name_set b 
                   (Printf.sprintf "Person_%d_%d" i j);
@@ -627,16 +567,14 @@ let test_high_contention_scenario () =
                 SchemaBuilder.Builder.Person.email_set b "email";
                 SchemaBuilder.Builder.Person.bio_set b "bio")
               SchemaBuilder.Builder.Person.init_root
-              SchemaBuilder.Builder.Person.to_message;
+              SchemaBuilder.Builder.Person.to_message);
             n
           ) with
           | Some _ -> Atomic.incr success_count
           | None -> ()
         end else begin
-          (* Read *)
           match Gvecdb.with_transaction_ro db (fun txn ->
-            (* Just check if node 0 exists or iterate *)
-            let _ = Gvecdb.node_exists db ~txn 0L in
+            let _ = ok_exn (Gvecdb.node_exists db ~txn 0L) in
             ()
           ) with
           | Some () -> Atomic.incr success_count
@@ -646,7 +584,6 @@ let test_high_contention_scenario () =
     )
   ) in
   Array.iter Domain.join domains;
-  (* Most operations should succeed *)
   let total_ops = num_domains * ops_per_domain in
   let successes = Atomic.get success_count in
   check bool "most operations succeeded" true (successes > total_ops / 2);

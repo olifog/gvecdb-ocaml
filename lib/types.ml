@@ -20,6 +20,35 @@ type edge_info = {
   dst : node_id;
 }
 
+type error =
+  | Node_not_found of node_id
+  | Edge_not_found of edge_id
+  | Storage_full
+  | Storage_error of string
+  | Corrupted_data of string
+
+module Error = struct
+  let to_string = function
+    | Node_not_found id -> Printf.sprintf "node not found: %Ld" id
+    | Edge_not_found id -> Printf.sprintf "edge not found: %Ld" id
+    | Storage_full -> "storage full"
+    | Storage_error msg -> Printf.sprintf "storage error: %s" msg
+    | Corrupted_data msg -> Printf.sprintf "corrupted data: %s" msg
+
+  let pp fmt e = Format.pp_print_string fmt (to_string e)
+end
+
+let ( let* ) = Result.bind
+let ( let+ ) r f = Result.map f r
+
+let wrap_lmdb_exn f =
+  try Ok (f ())
+  with
+  | Not_found | Lmdb.Not_found -> Error (Corrupted_data "unexpected not found in storage operation")
+  | Lmdb.Map_full -> Error Storage_full
+  | Lmdb.Error code -> Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code))
+  | Invalid_argument msg -> Error (Storage_error msg)
+
 type 'perm txn = 'perm Lmdb.Txn.t constraint 'perm = [< `Read | `Write ]
 type ro_txn = [ `Read ] txn
 type rw_txn = [ `Read | `Write ] txn
