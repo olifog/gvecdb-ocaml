@@ -1,7 +1,7 @@
 (** Common test utilities and schema setup *)
 
-module SchemaBuilder = Schemas.Make(Capnp.BytesMessage)
-module SchemaReader = Schemas.Make(Gvecdb.Bigstring_message)
+module SchemaBuilder = Schemas.Make (Capnp.BytesMessage)
+module SchemaReader = Schemas.Make (Gvecdb.Bigstring_message)
 
 (** Unwrap a result, failing the test on error *)
 let ok_exn = function
@@ -9,17 +9,19 @@ let ok_exn = function
   | Error e -> Alcotest.fail (Gvecdb.Error.to_string e)
 
 let temp_db_path prefix =
-  Filename.(concat (get_temp_dir_name ())
-    (Printf.sprintf "%s_%d_%d.db" prefix (Unix.getpid ()) (Random.int 100000)))
+  Filename.(
+    concat (get_temp_dir_name ())
+      (Printf.sprintf "%s_%d_%d.db" prefix (Unix.getpid ()) (Random.int 100000)))
 
 let with_temp_db prefix f =
   let path = temp_db_path prefix in
   (try Sys.remove path with _ -> ());
   let db = Gvecdb.create path |> ok_exn in
-  Fun.protect ~finally:(fun () ->
-    Gvecdb.close db;
-    (try Sys.remove path with _ -> ())
-  ) (fun () -> f db)
+  Fun.protect
+    ~finally:(fun () ->
+      Gvecdb.close db;
+      try Sys.remove path with _ -> ())
+    (fun () -> f db)
 
 let register_schemas db =
   ok_exn (Gvecdb.register_node_schema_capnp db "person" 0xd8e6e025e7838111L);
@@ -27,33 +29,35 @@ let register_schemas db =
 
 let create_person db ?txn name age email bio =
   let node = ok_exn (Gvecdb.create_node db ?txn "person") in
-  ok_exn (Gvecdb.set_node_props_capnp db ?txn node "person"
-    (fun b ->
-      SchemaBuilder.Builder.Person.name_set b name;
-      SchemaBuilder.Builder.Person.age_set_int_exn b age;
-      SchemaBuilder.Builder.Person.email_set b email;
-      SchemaBuilder.Builder.Person.bio_set b bio)
-    SchemaBuilder.Builder.Person.init_root
-    SchemaBuilder.Builder.Person.to_message);
+  ok_exn
+    (Gvecdb.set_node_props_capnp db ?txn node "person"
+       (fun b ->
+         SchemaBuilder.Builder.Person.name_set b name;
+         SchemaBuilder.Builder.Person.age_set_int_exn b age;
+         SchemaBuilder.Builder.Person.email_set b email;
+         SchemaBuilder.Builder.Person.bio_set b bio)
+       SchemaBuilder.Builder.Person.init_root
+       SchemaBuilder.Builder.Person.to_message);
   node
 
 let create_knows_edge db ?txn src dst since context strength =
   let edge = ok_exn (Gvecdb.create_edge db ?txn "knows" src dst) in
-  ok_exn (Gvecdb.set_edge_props_capnp db ?txn edge "knows"
-    (fun b ->
-      SchemaBuilder.Builder.Knows.since_set b since;
-      SchemaBuilder.Builder.Knows.context_set b context;
-      SchemaBuilder.Builder.Knows.strength_set b strength)
-    SchemaBuilder.Builder.Knows.init_root
-    SchemaBuilder.Builder.Knows.to_message);
+  ok_exn
+    (Gvecdb.set_edge_props_capnp db ?txn edge "knows"
+       (fun b ->
+         SchemaBuilder.Builder.Knows.since_set b since;
+         SchemaBuilder.Builder.Knows.context_set b context;
+         SchemaBuilder.Builder.Knows.strength_set b strength)
+       SchemaBuilder.Builder.Knows.init_root
+       SchemaBuilder.Builder.Knows.to_message);
   edge
 
 let get_person_name db ?txn node =
-  ok_exn (Gvecdb.get_node_props_capnp db ?txn node
-    SchemaReader.Reader.Person.of_message
-    SchemaReader.Reader.Person.name_get)
+  ok_exn
+    (Gvecdb.get_node_props_capnp db ?txn node
+       SchemaReader.Reader.Person.of_message SchemaReader.Reader.Person.name_get)
 
 let get_person_age db ?txn node =
-  ok_exn (Gvecdb.get_node_props_capnp db ?txn node
-    SchemaReader.Reader.Person.of_message
-    SchemaReader.Reader.Person.age_get)
+  ok_exn
+    (Gvecdb.get_node_props_capnp db ?txn node
+       SchemaReader.Reader.Person.of_message SchemaReader.Reader.Person.age_get)

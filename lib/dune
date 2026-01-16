@@ -1,6 +1,23 @@
 (library
- (instrumentation (backend bisect_ppx))
+ (instrumentation
+  (backend bisect_ppx))
  (name gvecdb)
  (public_name gvecdb)
- (libraries lmdb capnp bigstringaf)
- (modules types keys store bigstring_storage bigstring_message props_capnp gvecdb))
+ (libraries lmdb capnp bigstringaf unix)
+ (foreign_stubs
+  (language c)
+  (names msync_stubs))
+ (modules
+  common
+  types
+  keys
+  store
+  bigstring_storage
+  bigstring_message
+  props_capnp
+  msync
+  float32_vec
+  topk
+  vector_file
+  knn
+  gvecdb))

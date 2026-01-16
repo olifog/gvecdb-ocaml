@@ -1,4 +1,5 @@
 (vendored_dirs ocaml-lmdb)
 
-(subdir ocaml-lmdb
+(subdir
+ ocaml-lmdb
  (dirs :standard \ tests))

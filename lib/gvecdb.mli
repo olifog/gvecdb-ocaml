@@ -2,37 +2,25 @@
 
 (** {1 core types} *)
 
-(** BigstringMessage for mmap-backed CapnProto reads.
-    use with Schema.Make to create readers that read from mmap. *)
 module Bigstring_message : Capnp.MessageSig.S
 
-type bigstring = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
-
-(** 64-bit IDs for nodes, edges, vectors, etc *)
+type bigstring = Common.bigstring
 type id = int64
-
-(** IDs for interned strings (node types, edge types, etc) *)
 type intern_id = int64
-
-(** node ID *)
 type node_id = id
-
-(** edge ID *)
 type edge_id = id
-
-(** vector ID *)
 type vector_id = id
-
-(** vector tag ID *)
 type vector_tag_id = intern_id
+type owner_kind = Node | Edge
 
-(** node information record *)
-type node_info = {
-  id : node_id;
-  node_type : string;
-}
+module Owner : sig
+  val encode : owner_kind -> id -> int64
+  val decode : int64 -> owner_kind * id
+  val kind_to_string : owner_kind -> string
+end
 
-(** edge information record *)
+type node_info = { id : node_id; node_type : string }
+
 type edge_info = {
   id : edge_id;
   edge_type : string;
@@ -40,17 +28,16 @@ type edge_info = {
   dst : node_id;
 }
 
-(** vector information record *)
 type vector_info = {
   vector_id : vector_id;
-  node_id : node_id;
+  owner_kind : owner_kind;
+  owner_id : id;
   vector_tag : string;
 }
 
-(** database handle *)
 type t
 
-(** {1 error handling} *)
+(** {1 errors} *)
 
 type error =
   | Node_not_found of node_id
@@ -67,319 +54,207 @@ end
 
 (** {1 transactions} *)
 
-(** transaction handle - wraps LMDB transaction *)
 type 'perm txn = 'perm Lmdb.Txn.t constraint 'perm = [< `Read | `Write ]
-
-(** read-only transaction *)
 type ro_txn = [ `Read ] txn
-
-(** read-write transaction *)
 type rw_txn = [ `Read | `Write ] txn
 
-(** [with_transaction db f] runs [f] within a read-write transaction.
-    
-    All operations within [f] will be atomic - either all succeed or all are rolled back.
-    The transaction is automatically committed when [f] returns normally.
-    If [f] raises an exception, the transaction is rolled back.
-    
-    Example:
-    {[
-      let result = with_transaction db (fun txn ->
-        let* alice = create_node db ~txn "person" in
-        let* bob = create_node db ~txn "person" in
-        let* _ = create_edge db ~txn "knows" alice bob in
-        Ok (alice, bob)
-      )
-    ]}
-    
-    @return [Some result] if transaction committed successfully, [None] if aborted via [abort_transaction]
-*)
 val with_transaction : t -> (rw_txn -> 'a) -> 'a option
+(** run [f] in a read-write transaction. returns [None] if aborted *)
 
-(** [with_transaction_ro db f] runs [f] within a read-only transaction.
-    
-    Read-only transactions provide a consistent snapshot view of the database.
-    Multiple read-only transactions can run concurrently.
-    
-    @return [Some result] if transaction completed successfully, [None] if aborted
-*)
 val with_transaction_ro : t -> (ro_txn -> 'a) -> 'a option
-
-(** [abort_transaction txn] aborts the current transaction.
-    
-    The enclosing [with_transaction] or [with_transaction_ro] will return [None].
-*)
 val abort_transaction : 'perm txn -> 'a
 
 (** {1 database lifecycle} *)
 
-(** [create ?map_size path] creates or opens a gvecdb database at [path]
-    
-    @param map_size maximum database size in bytes. Default is 10GB.
-      This reserves virtual address space but doesn't allocate physical memory
-      until data is written. On 64-bit systems, it's safe to set this very high.
-    @param path path to the database file
-    @return [Ok t] on success, [Error e] on failure
-*)
 val create : ?map_size:int -> string -> (t, error) result
+(** create or open database. [map_size] is max size in bytes (default 10GB) *)
 
-(** [close db] closes the database and releases all resources.
-    
-    The database handle should not be used after closing.
-*)
 val close : t -> unit
 
 (** {1 nodes} *)
 
-(** [create_node db ?txn node_type] creates a new node of the given type.
-    
-    @param txn optional transaction handle
-    @param node_type string name of the node type (e.g. "person", "document")
-    @return [Ok node_id] on success, [Error e] on failure
-*)
-val create_node : t -> ?txn:[> `Read | `Write ] txn -> string -> (node_id, error) result
+val create_node :
+  t -> ?txn:[> `Read | `Write ] txn -> string -> (node_id, error) result
 
-(** [node_exists db ?txn node_id] checks if a node exists
-    
-    @return [Ok true] if exists, [Ok false] if not, [Error e] on storage error
-*)
 val node_exists : t -> ?txn:[> `Read ] txn -> node_id -> (bool, error) result
 
-(** [get_node_info db ?txn node_id] looks up node information by node id
-    
-    @return [Ok node_info] if found, [Error (Node_not_found id)] if node doesn't exist
-*)
-val get_node_info : t -> ?txn:[> `Read ] txn -> node_id -> (node_info, error) result
+val get_node_info :
+  t -> ?txn:[> `Read ] txn -> node_id -> (node_info, error) result
 
-(** [delete_node db ?txn node_id] deletes a node and all connected edges.
-    
-    Cascade deletes all outbound and inbound edges connected to the node,
-    cleaning up adjacency indexes.
-    
-    @return [Ok ()] on success, [Error (Node_not_found id)] if node doesn't exist
-*)
-val delete_node : t -> ?txn:[> `Read | `Write ] txn -> node_id -> (unit, error) result
+val delete_node :
+  t -> ?txn:[> `Read | `Write ] txn -> node_id -> (unit, error) result
+(** cascade deletes all attached vectors, connected edges, and their vectors *)
 
 (** {1 edges} *)
 
-(** [create_edge db ?txn edge_type src dst] creates a directed edge from [src] to [dst].
-    
-    Updates both outbound and inbound adjacency indexes.
-    
-    @param txn optional transaction handle
-    @param edge_type string name of the edge type (e.g. "knows", "follows_from")
-    @return [Ok edge_id] on success, [Error e] on failure
-*)
-val create_edge : t -> ?txn:[> `Read | `Write ] txn -> string -> node_id -> node_id -> (edge_id, error) result
+val create_edge :
+  t ->
+  ?txn:[> `Read | `Write ] txn ->
+  string ->
+  node_id ->
+  node_id ->
+  (edge_id, error) result
 
-(** [edge_exists db ?txn edge_id] checks if an edge exists
-    
-    @return [Ok true] if exists, [Ok false] if not, [Error e] on storage error
-*)
 val edge_exists : t -> ?txn:[> `Read ] txn -> edge_id -> (bool, error) result
 
-(** [delete_edge db ?txn edge_id] deletes an edge and cleans up adjacency indexes
-    
-    @return [Ok ()] on success, [Error (Edge_not_found id)] if edge doesn't exist
-*)
-val delete_edge : t -> ?txn:[> `Read | `Write ] txn -> edge_id -> (unit, error) result
+val delete_edge :
+  t -> ?txn:[> `Read | `Write ] txn -> edge_id -> (unit, error) result
+(** cascade deletes all attached vectors *)
 
-(** [get_edge_info db ?txn edge_id] looks up edge information by edge id
-    
-    @return [Ok edge_info] if found, [Error (Edge_not_found id)] if edge doesn't exist
-*)
-val get_edge_info : t -> ?txn:[> `Read ] txn -> edge_id -> (edge_info, error) result
+val get_edge_info :
+  t -> ?txn:[> `Read ] txn -> edge_id -> (edge_info, error) result
 
 (** {1 adjacency queries} *)
 
-(** [get_outbound_edges db ?txn node_id] returns all outbound edges from a node
-    
-    @return [Ok edges] on success (empty list if node has no outbound edges)
-*)
-val get_outbound_edges : t -> ?txn:[> `Read ] txn -> node_id -> (edge_info list, error) result
+val get_outbound_edges :
+  t -> ?txn:[> `Read ] txn -> node_id -> (edge_info list, error) result
 
-(** [get_inbound_edges db ?txn node_id] returns all inbound edges to a node
-    
-    @return [Ok edges] on success (empty list if node has no inbound edges)
-*)
-val get_inbound_edges : t -> ?txn:[> `Read ] txn -> node_id -> (edge_info list, error) result
+val get_inbound_edges :
+  t -> ?txn:[> `Read ] txn -> node_id -> (edge_info list, error) result
 
-(** [get_outbound_edges_by_type db ?txn node_id edge_type] returns outbound edges of a specific type
-    
-    @param edge_type string name of the edge type to filter by
-    @return [Ok edges] on success (empty list if no edges of this type)
-*)
-val get_outbound_edges_by_type : t -> ?txn:[> `Read ] txn -> node_id -> string -> (edge_info list, error) result
+val get_outbound_edges_by_type :
+  t ->
+  ?txn:[> `Read ] txn ->
+  node_id ->
+  string ->
+  (edge_info list, error) result
 
-(** [get_inbound_edges_by_type db ?txn node_id edge_type] returns inbound edges of a specific type
-    
-    @param edge_type string name of the edge type to filter by
-    @return [Ok edges] on success (empty list if no edges of this type)
-*)
-val get_inbound_edges_by_type : t -> ?txn:[> `Read ] txn -> node_id -> string -> (edge_info list, error) result
+val get_inbound_edges_by_type :
+  t ->
+  ?txn:[> `Read ] txn ->
+  node_id ->
+  string ->
+  (edge_info list, error) result
 
-(** {1 property schemas with capnproto} *)
+(** {1 capnproto schemas} *)
 
-(** [register_node_schema_capnp db ?txn type_name schema_id] registers a node schema.
-    
-    Stores metadata for validation. schema_id comes from capnproto-generated code.
-    
-    Example:
-    {[
-      register_node_schema_capnp db "person" 0xd8e6e025e7838111L
-    ]}
-    
-    @return [Ok ()] on success, [Error e] on failure
-*)
-val register_node_schema_capnp : t -> ?txn:[> `Read | `Write ] txn -> string -> int64 -> (unit, error) result
+val register_node_schema_capnp :
+  t -> ?txn:[> `Read | `Write ] txn -> string -> int64 -> (unit, error) result
 
-(** [register_edge_schema_capnp db ?txn type_name schema_id] registers an edge schema
-    
-    @return [Ok ()] on success, [Error e] on failure
-*)
-val register_edge_schema_capnp : t -> ?txn:[> `Read | `Write ] txn -> string -> int64 -> (unit, error) result
+val register_edge_schema_capnp :
+  t -> ?txn:[> `Read | `Write ] txn -> string -> int64 -> (unit, error) result
 
-(** {1 node properties with capnproto builder/reader} *)
+(** {1 node properties} *)
 
-(** [set_node_props_capnp db ?txn node_id type_name build_fn init_root to_message] 
-    sets properties using capnproto builder api.
-    
-    Example:
-    {[
-      set_node_props_capnp db alice "person"
-        (fun builder ->
-          Person.Builder.name_set builder "Alice";
-          Person.Builder.age_set_int_exn builder 30)
-        Person.Builder.init_root
-        Person.Builder.to_message
-    ]}
-    
-    @return [Ok ()] on success, [Error e] on failure
-*)
-val set_node_props_capnp : 
-  t -> ?txn:[> `Read | `Write ] txn -> node_id -> string -> 
-  ('builder -> unit) -> 
-  (unit -> 'builder) -> 
-  ('builder -> 'a Capnp.BytesMessage.Message.t) -> 
-  (unit, error) result
-
-(** [get_node_props_capnp db ?txn node_id of_message read_fn]
-    gets properties using capnproto reader api with zero-copy from lmdb.
-    
-    Example:
-    {[
-      let name = get_node_props_capnp db alice
-        Person.Reader.of_message
-        Person.Reader.name_get
-    ]}
-    
-    @return [Ok result] on success, [Error (Node_not_found id)] if node doesn't exist
-*)
-val get_node_props_capnp :
-  t -> ?txn:[> `Read ] txn -> node_id ->
-  (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
-  ('reader -> 'result) ->
-  ('result, error) result
-
-(** {1 edge properties with capnproto builder/reader} *)
-
-(** [set_edge_props_capnp db ?txn edge_id ...] sets edge properties using builder api
-    
-    @return [Ok ()] on success, [Error (Edge_not_found id)] if edge doesn't exist
-*)
-val set_edge_props_capnp :
-  t -> ?txn:[> `Read | `Write ] txn -> edge_id -> string ->
+val set_node_props_capnp :
+  t ->
+  ?txn:[> `Read | `Write ] txn ->
+  node_id ->
+  string ->
   ('builder -> unit) ->
   (unit -> 'builder) ->
   ('builder -> 'a Capnp.BytesMessage.Message.t) ->
   (unit, error) result
 
-(** [get_edge_props_capnp db ?txn edge_id ...] gets edge properties using reader api with zero-copy from lmdb
-    
-    @return [Ok result] on success, [Error (Edge_not_found id)] if edge doesn't exist
-*)
+val get_node_props_capnp :
+  t ->
+  ?txn:[> `Read ] txn ->
+  node_id ->
+  (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
+  ('reader -> 'result) ->
+  ('result, error) result
+
+(** {1 edge properties} *)
+
+val set_edge_props_capnp :
+  t ->
+  ?txn:[> `Read | `Write ] txn ->
+  edge_id ->
+  string ->
+  ('builder -> unit) ->
+  (unit -> 'builder) ->
+  ('builder -> 'a Capnp.BytesMessage.Message.t) ->
+  (unit, error) result
+
 val get_edge_props_capnp :
-  t -> ?txn:[> `Read ] txn -> edge_id ->
+  t ->
+  ?txn:[> `Read ] txn ->
+  edge_id ->
   (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
   ('reader -> 'result) ->
   ('result, error) result
 
 (** {1 vectors} *)
 
-(** [create_vector db ?txn node_id vector_tag data] creates a new vector attached to a node.
-    
-    Vectors are stored as raw bytes (typically float32 arrays).
-    The vector_tag allows multiple vectors per node (e.g., "title_embedding", "content_embedding").
-    
-    @param node_id the node to attach the vector to
-    @param vector_tag string tag for this vector type
-    @param data raw vector bytes (e.g., float32 array as bigstring)
-    @return [Ok vector_id] on success, [Error (Node_not_found id)] if node doesn't exist
-*)
-val create_vector : t -> ?txn:[> `Read | `Write ] txn -> node_id -> string -> bigstring -> (vector_id, error) result
+val create_vector :
+  t ->
+  txn:[> `Read | `Write ] txn ->
+  ?normalize:bool ->
+  node_id ->
+  string ->
+  bigstring ->
+  (vector_id, error) result
+(** create vector on a node. [~normalize:true] (default) stores unit-length
+    vectors for fast cosine similarity with original magnitude preserved in
+    metadata. requires explicit transaction *)
 
-(** [vector_exists db ?txn vector_id] checks if a vector exists
-    
-    @return [Ok true] if exists, [Ok false] if not, [Error e] on storage error
-*)
-val vector_exists : t -> ?txn:[> `Read ] txn -> vector_id -> (bool, error) result
+val create_edge_vector :
+  t ->
+  txn:[> `Read | `Write ] txn ->
+  ?normalize:bool ->
+  edge_id ->
+  string ->
+  bigstring ->
+  (vector_id, error) result
 
-(** [get_vector db ?txn vector_id] gets vector data by ID.
-    
-    Returns a view into mmap'd memory - only valid within the current transaction.
-    
-    @return [Ok bigstring] on success, [Error (Vector_not_found id)] if not found
-*)
-val get_vector : t -> ?txn:[> `Read ] txn -> vector_id -> (bigstring, error) result
+val vector_exists :
+  t -> ?txn:[> `Read ] txn -> vector_id -> (bool, error) result
 
-(** [get_vector_info db ?txn vector_id] gets vector metadata (owning node and tag).
-    
-    @return [Ok vector_info] on success, [Error (Vector_not_found id)] if not found
-*)
-val get_vector_info : t -> ?txn:[> `Read ] txn -> vector_id -> (vector_info, error) result
+val get_vector :
+  t -> ?txn:[> `Read ] txn -> vector_id -> (bigstring, error) result
+(** returns normalized vector if stored with [~normalize:true]. zero-copy view
+    into mmap, only valid within current transaction *)
 
-(** [delete_vector db ?txn vector_id] deletes a vector and cleans up indexes.
-    
-    @return [Ok ()] on success, [Error (Vector_not_found id)] if not found
-*)
-val delete_vector : t -> ?txn:[> `Read | `Write ] txn -> vector_id -> (unit, error) result
+val get_vector_info :
+  t -> ?txn:[> `Read ] txn -> vector_id -> (vector_info, error) result
 
-(** [get_vectors_for_node db ?txn node_id ?vector_tag ()] gets all vectors attached to a node.
-    
-    @param vector_tag optional filter by tag name
-    @return [Ok vector_info list] on success (empty list if none)
-*)
-val get_vectors_for_node : t -> ?txn:[> `Read ] txn -> node_id -> ?vector_tag:string -> unit -> (vector_info list, error) result
+val delete_vector :
+  t -> txn:[> `Read | `Write ] txn -> vector_id -> (unit, error) result
+
+val get_vectors_for_node :
+  t ->
+  ?txn:[> `Read ] txn ->
+  node_id ->
+  ?vector_tag:string ->
+  unit ->
+  (vector_info list, error) result
+
+val get_vectors_for_edge :
+  t ->
+  ?txn:[> `Read ] txn ->
+  edge_id ->
+  ?vector_tag:string ->
+  unit ->
+  (vector_info list, error) result
 
 (** {1 k-NN search} *)
 
-(** distance metric for vector similarity *)
-type distance_metric = 
-  | Euclidean   (** L2 distance *)
-  | Cosine      (** cosine distance (1 - cosine similarity) *)
-  | DotProduct  (** negative dot product (so smaller = more similar) *)
+type distance_metric =
+  | Euclidean
+  | Cosine
+  | DotProduct  (** negative dot product *)
 
-(** k-NN search result *)
 type knn_result = {
   vector_id : vector_id;
-  node_id : node_id;
+  owner_kind : owner_kind;
+  owner_id : id;
   vector_tag : string;
   distance : float;
 }
 
-(** [knn_brute_force db ?txn ~metric ~k query] performs brute-force k-NN search.
-    
-    Scans all vectors in the database, computes distances, and returns the k nearest.
-    
-    @param metric distance metric to use
-    @param k number of nearest neighbors to return
-    @param query query vector as float array
-    @return [Ok results] sorted by distance (ascending)
-*)
-val knn_brute_force : t -> ?txn:[> `Read ] txn -> metric:distance_metric -> k:int -> float array -> (knn_result list, error) result
+val knn_brute_force :
+  t ->
+  ?txn:[> `Read ] txn ->
+  metric:distance_metric ->
+  k:int ->
+  float array ->
+  (knn_result list, error) result
+(** brute-force k-NN. O(n log k). results sorted by distance ascending *)
 
-(** [knn_brute_force_bs db ?txn ~metric ~k query] like [knn_brute_force] but with bigstring query.
-    
-    @param query query vector as bigstring (float32 array in little-endian format)
-*)
-val knn_brute_force_bs : t -> ?txn:[> `Read ] txn -> metric:distance_metric -> k:int -> bigstring -> (knn_result list, error) result
+val knn_brute_force_bs :
+  t ->
+  ?txn:[> `Read ] txn ->
+  metric:distance_metric ->
+  k:int ->
+  bigstring ->
+  (knn_result list, error) result

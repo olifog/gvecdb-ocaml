@@ -24,7 +24,36 @@ This is a Part II project for the Computer Science Tripos at the University of C
 
 ## Quick Start
 
-First, make sure LMDB is installed on your system
+### Prereqs
+
+**System dependencies** (C libraries):
+
+```bash
+# Ubuntu/Debian
+sudo apt install liblmdb-dev capnproto pkg-config
+
+# macOS
+brew install lmdb capnp pkg-config
+
+# Arch
+sudo pacman -S lmdb capnproto pkgconf
+```
+
+**OCaml dependencies**:
+
+```bash
+opam install capnp bigstringaf stdint alcotest
+```
+
+### Clone
+
+```bash
+git clone --recurse-submodules https://github.com/olifog/gvecdb-ocaml.git
+cd gvecdb-ocaml
+
+# If already cloned without submodules:
+git submodule update --init
+```
 
 ### Build
 

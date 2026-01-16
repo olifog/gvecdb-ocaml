@@ -2,8 +2,9 @@
  (deps schemas.capnp)
  (targets schemas.ml schemas.mli)
  (action
-  (chdir %{workspace_root}/test_schemas
-    (run capnp compile -o ocaml schemas.capnp))))
+  (chdir
+   %{workspace_root}/test_schemas
+   (run capnp compile -o ocaml schemas.capnp))))
 
 (library
  (name test_schemas)
