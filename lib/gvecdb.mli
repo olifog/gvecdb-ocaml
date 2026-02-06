@@ -97,9 +97,9 @@ val create_edge :
 
 val edge_exists : t -> ?txn:[> `Read ] txn -> edge_id -> (bool, error) result
 
+(** cascade deletes all attached vectors *)
 val delete_edge :
   t -> ?txn:[> `Read | `Write ] txn -> edge_id -> (unit, error) result
-(** cascade deletes all attached vectors *)
 
 val get_edge_info :
   t -> ?txn:[> `Read ] txn -> edge_id -> (edge_info, error) result
@@ -176,6 +176,9 @@ val get_edge_props_capnp :
 
 (** {1 vectors} *)
 
+(** create vector on a node. [~normalize:true] (default) stores unit-length
+    vectors for fast cosine similarity with original magnitude preserved in
+    metadata. requires explicit transaction *)
 val create_vector :
   t ->
   txn:[> `Read | `Write ] txn ->
@@ -184,9 +187,6 @@ val create_vector :
   string ->
   bigstring ->
   (vector_id, error) result
-(** create vector on a node. [~normalize:true] (default) stores unit-length
-    vectors for fast cosine similarity with original magnitude preserved in
-    metadata. requires explicit transaction *)
 
 val create_edge_vector :
   t ->
@@ -199,11 +199,11 @@ val create_edge_vector :
 
 val vector_exists :
   t -> ?txn:[> `Read ] txn -> vector_id -> (bool, error) result
-
+  
+  (** returns normalized vector if stored with [~normalize:true]. zero-copy view
+      into mmap, only valid within current transaction *)
 val get_vector :
   t -> ?txn:[> `Read ] txn -> vector_id -> (bigstring, error) result
-(** returns normalized vector if stored with [~normalize:true]. zero-copy view
-    into mmap, only valid within current transaction *)
 
 val get_vector_info :
   t -> ?txn:[> `Read ] txn -> vector_id -> (vector_info, error) result
@@ -242,6 +242,7 @@ type knn_result = {
   distance : float;
 }
 
+(** brute-force k-NN. O(n log k). results sorted by distance ascending *)
 val knn_brute_force :
   t ->
   ?txn:[> `Read ] txn ->
@@ -249,7 +250,6 @@ val knn_brute_force :
   k:int ->
   float array ->
   (knn_result list, error) result
-(** brute-force k-NN. O(n log k). results sorted by distance ascending *)
 
 val knn_brute_force_bs :
   t ->
@@ -258,3 +258,38 @@ val knn_brute_force_bs :
   k:int ->
   bigstring ->
   (knn_result list, error) result
+
+(** {1 HNSW-based k-NN search} *)
+
+(** HNSW approximate k-NN. ef controls search quality (higher = better recall).
+    Searches only vectors with the specified tag *)
+val knn_hnsw :
+  t ->
+  ?txn:[> `Read ] txn ->
+  metric:distance_metric ->
+  k:int ->
+  ef:int ->
+  vector_tag:string ->
+  float array ->
+  (knn_result list, error) result
+
+val knn_hnsw_bs :
+  t ->
+  ?txn:[> `Read ] txn ->
+  metric:distance_metric ->
+  k:int ->
+  ef:int ->
+  vector_tag:string ->
+  bigstring ->
+  (knn_result list, error) result
+
+(** rebuild HNSW index for a tag from scratch using all vectors with that tag *)
+val rebuild_hnsw_index :
+  t -> ?txn:rw_txn -> vector_tag:string -> unit -> (unit, error) result
+
+(** {1 Internal modules (exposed for testing)} *)
+
+module Types = Types
+module Hnsw_page = Hnsw_page
+module Hnsw_mvcc = Hnsw_mvcc
+module Hnsw = Hnsw

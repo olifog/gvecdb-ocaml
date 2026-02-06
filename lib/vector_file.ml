@@ -12,19 +12,16 @@ type bigstring = Common.bigstring
 let magic = "GVECVECS"
 let current_version = 3L
 let alignment = 32
-
 let file_header_size = 32
 let file_header_magic_off = 0
 let file_header_version_off = 8
 let file_header_slot_size_off = 16
 let file_header_next_offset_off = 24
-
 let vec_header_size = 16
 let vec_header_dim_off = 0
 let vec_header_flags_off = 4
 let vec_header_reserved_off = 5
 let vec_header_norm_off = 8
-
 let max_vector_dim = 1_000_000
 let initial_file_size = 1024 * 1024
 
@@ -149,25 +146,18 @@ let create path : (t, error) result =
     else begin
       let stats = Unix.fstat fd in
       let file_size = stats.Unix.st_size in
-      if file_size < file_header_size then begin
-        Unix.close fd;
-        Error File_too_small
-      end
-      else begin
-        let mmap = create_mmap fd file_size in
-        if get_magic mmap <> magic then begin
-          Unix.close fd;
-          Error Invalid_magic
-        end
-        else begin
-          let version = get_version mmap in
-          if version <> current_version then begin
-            Unix.close fd;
-            Error (Version_mismatch version)
-          end
-          else Ok { fd; mmap; file_size; path }
-        end
-      end
+      let result =
+        if file_size < file_header_size then Error File_too_small
+        else
+          let mmap = create_mmap fd file_size in
+          if get_magic mmap <> magic then Error Invalid_magic
+          else
+            let version = get_version mmap in
+            if version <> current_version then Error (Version_mismatch version)
+            else Ok { fd; mmap; file_size; path }
+      in
+      (match result with Error _ -> Unix.close fd | Ok _ -> ());
+      result
     end
   with Unix.Unix_error (err, fn, arg) ->
     Error

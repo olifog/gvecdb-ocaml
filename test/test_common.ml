@@ -1,9 +1,6 @@
-(** Common test utilities and schema setup *)
-
 module SchemaBuilder = Schemas.Make (Capnp.BytesMessage)
 module SchemaReader = Schemas.Make (Gvecdb.Bigstring_message)
 
-(** Unwrap a result, failing the test on error *)
 let ok_exn = function
   | Ok x -> x
   | Error e -> Alcotest.fail (Gvecdb.Error.to_string e)
@@ -13,14 +10,28 @@ let temp_db_path prefix =
     concat (get_temp_dir_name ())
       (Printf.sprintf "%s_%d_%d.db" prefix (Unix.getpid ()) (Random.int 100000)))
 
+let cleanup_db_files path =
+  (try Sys.remove path with _ -> ());
+  let base = Filename.remove_extension path in
+  (try Sys.remove (base ^ ".vectors") with _ -> ());
+  let hnsw_dir = base ^ ".hnsw" in
+  try
+    if Sys.file_exists hnsw_dir && Sys.is_directory hnsw_dir then begin
+      Array.iter
+        (fun f -> try Sys.remove (Filename.concat hnsw_dir f) with _ -> ())
+        (Sys.readdir hnsw_dir);
+      Unix.rmdir hnsw_dir
+    end
+  with _ -> ()
+
 let with_temp_db prefix f =
   let path = temp_db_path prefix in
-  (try Sys.remove path with _ -> ());
+  cleanup_db_files path;
   let db = Gvecdb.create path |> ok_exn in
   Fun.protect
     ~finally:(fun () ->
       Gvecdb.close db;
-      try Sys.remove path with _ -> ())
+      cleanup_db_files path)
     (fun () -> f db)
 
 let register_schemas db =

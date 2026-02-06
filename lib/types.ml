@@ -73,7 +73,6 @@ module Error = struct
 end
 
 let ( let* ) = Result.bind
-let ( let+ ) r f = Result.map f r
 
 let wrap_lmdb_exn f =
   try Ok (f ()) with
@@ -102,11 +101,9 @@ type t = {
   vector_file : Vector_file.t; (* mmap'd vector storage *)
   vector_index : (bigstring, bigstring, [ `Uni ]) Lmdb.Map.t;
   vector_owners : (bigstring, bigstring, [ `Uni ]) Lmdb.Map.t;
+  hnsw_slots : (bigstring, bigstring, [ `Uni ]) Lmdb.Map.t;
+      (* (tag_id, vector_id) -> slot_id mapping for HNSW persistence *)
 }
-(* nodes/edges store raw CapnProto message bytes
-   node_meta/edge_meta store compact binary metadata
-   adjacency indexes enable efficient graph traversal
-   vector_file stores actual vector data in a separate mmap'd file *)
 
 module Metadata = struct
   let version = "version"

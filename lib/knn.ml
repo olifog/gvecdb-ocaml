@@ -27,8 +27,7 @@ let compute_distance_raw metric query query_norm_sq vec_bs vec_norm dim =
         let query_norm = sqrt query_norm_sq in
         let denom = query_norm *. vec_norm in
         if denom = 0.0 then 1.0 else 1.0 -. (dot /. denom)
-    | Euclidean ->
-        Float.max 0.0 (query_norm_sq +. vec_norm_sq -. (2.0 *. dot))
+    | Euclidean -> Float.max 0.0 (query_norm_sq +. vec_norm_sq -. (2.0 *. dot))
     | DotProduct -> -.dot
 
 let array_norm_sq arr = Array.fold_left (fun acc x -> acc +. (x *. x)) 0.0 arr

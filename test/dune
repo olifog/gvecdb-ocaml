@@ -32,3 +32,23 @@
  (name test_vectors)
  (modules test_vectors)
  (libraries alcotest gvecdb test_common bigstringaf unix))
+
+(test
+ (name test_hnsw)
+ (modules test_hnsw)
+ (libraries alcotest gvecdb test_common bigstringaf unix))
+
+(test
+ (name test_hnsw_mvcc)
+ (modules test_hnsw_mvcc)
+ (libraries alcotest gvecdb bigstringaf unix))
+
+(test
+ (name test_integration)
+ (modules test_integration)
+ (libraries alcotest gvecdb bigstringaf unix threads))
+
+(test
+ (name test_mvcc_inspection)
+ (modules test_mvcc_inspection)
+ (libraries alcotest gvecdb bigstringaf unix))

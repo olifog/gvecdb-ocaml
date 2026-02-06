@@ -355,29 +355,33 @@ let test_knn_dimension_mismatch () =
   with_temp_db "vectors" @@ fun db ->
   let n1 = ok_exn (Gvecdb.create_node db "doc") in
   let n2 = ok_exn (Gvecdb.create_node db "doc") in
-  (* v1 has 2 dims, v2 has 3 dims *)
+  (* v1 has 2 dims - inserting v2 with 3 dims in same tag should fail *)
   let v1 =
     with_txn db (fun txn ->
-        let v1 =
-          ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
-               (floats_to_bigstring [| 1.0; 0.0 |]))
-        in
-        let _ =
-          ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
-               (floats_to_bigstring [| 1.0; 0.0; 0.0 |]))
-        in
-        v1)
+        ok_exn
+          (Gvecdb.create_vector db ~txn n1 "e"
+             (floats_to_bigstring [| 1.0; 0.0 |])))
   in
-  (* query with 2 dims - should only match v1, v2 has wrong dimension *)
+  (* Second vector with different dimension should fail *)
+  let result =
+    with_txn db (fun txn ->
+        Gvecdb.create_vector db ~txn n2 "e"
+          (floats_to_bigstring [| 1.0; 0.0; 0.0 |]))
+  in
+  (match result with
+  | Error (Gvecdb.Corrupted_data msg) ->
+      check bool "dimension mismatch error" true
+        (String.sub msg 0 19 = "dimension mismatch:")
+  | Error _ ->
+      Alcotest.fail "expected Corrupted_data error for dimension mismatch"
+  | Ok _ -> Alcotest.fail "should have rejected mismatched dimension");
+  (* v1 should still be queryable *)
   let query = [| 1.0; 0.0 |] in
   let results =
     ok_exn (Gvecdb.knn_brute_force db ~metric:Euclidean ~k:10 query)
   in
-  (* v2 should be filtered out due to dimension mismatch (infinity distance) *)
-  check int "one matching result" 1 (List.length results);
-  check int64 "only v1 matches" v1 (List.hd results).Gvecdb.vector_id
+  check int "one result" 1 (List.length results);
+  check int64 "only v1" v1 (List.hd results).Gvecdb.vector_id
 
 let test_knn_k_larger_than_db () =
   with_temp_db "vectors" @@ fun db ->

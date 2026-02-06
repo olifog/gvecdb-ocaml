@@ -1,5 +1,3 @@
-(** key encoding/decoding helpers for LMDB indexes *)
-
 open Types
 module Bigstring = Bigstringaf
 
@@ -13,7 +11,6 @@ let decode_id_bs (bs : bigstring) : int64 =
     invalid_arg "Keys.decode_id_bs: buffer too short (need 8 bytes)";
   Bigstring.get_int64_be bs 0
 
-(** Adjacency key: (node_id, intern_id, opposite_id, edge_id) -> 32 bytes *)
 let encode_adjacency_bs ~node_id ~intern_id ~opposite_id ~edge_id : bigstring =
   let buf = Bigstring.create 32 in
   Bigstring.set_int64_be buf 0 node_id;
@@ -48,7 +45,6 @@ let encode_adjacency_prefix_bs ?node_id ?intern_id ?opposite_id () : bigstring =
       Bigstring.set_int64_be buf 16 oid;
       buf
 
-(** edge metadata: (type_id, src, dst) -> 24 bytes *)
 let encode_edge_meta ~type_id ~src ~dst : bigstring =
   let buf = Bigstring.create 24 in
   Bigstring.set_int64_be buf 0 type_id;
@@ -76,9 +72,6 @@ let bigstring_has_prefix ~prefix (bs : bigstring) : bool =
     in
     loop 0
 
-(** vector index key: (packed_owner_id, vector_tag_id, vector_id) -> 24 bytes
-    packed_owner_id has bit 63 = 0 for node, 1 for edge; bits 0-62 = actual id
-*)
 let encode_vector_index_bs ~owner_kind ~owner_id ~vector_tag_id ~vector_id :
     bigstring =
   let buf = Bigstring.create 24 in
@@ -108,9 +101,6 @@ let encode_vector_index_prefix_bs ~owner_kind ~owner_id ?vector_tag_id () :
       Bigstring.set_int64_be buf 8 tid;
       buf
 
-(** vector owner value: (packed_owner_id, vector_tag_id, file_offset) -> 24
-    bytes packed_owner_id has bit 63 = 0 for node, 1 for edge; bits 0-62 =
-    actual id file_offset is the byte offset in the vectors.bin mmap file *)
 let encode_vector_owner_bs ~owner_kind ~owner_id ~vector_tag_id ~file_offset :
     bigstring =
   let buf = Bigstring.create 24 in
@@ -129,3 +119,22 @@ let decode_vector_owner_bs (bs : bigstring) :
   let vector_tag_id = Bigstring.get_int64_be bs 8 in
   let file_offset = Bigstring.get_int64_be bs 16 in
   (owner_kind, owner_id, vector_tag_id, file_offset)
+
+let encode_hnsw_slot_key ~tag_id ~vector_id : bigstring =
+  let buf = Bigstring.create 16 in
+  Bigstring.set_int64_be buf 0 tag_id;
+  Bigstring.set_int64_be buf 8 vector_id;
+  buf
+
+let decode_hnsw_slot_key (bs : bigstring) : intern_id * vector_id =
+  if Bigstring.length bs < 16 then
+    invalid_arg "Keys.decode_hnsw_slot_key: buffer too short (need 16 bytes)";
+  let tag_id = Bigstring.get_int64_be bs 0 in
+  let vector_id = Bigstring.get_int64_be bs 8 in
+  (tag_id, vector_id)
+
+let encode_hnsw_slot_value slot_id : bigstring =
+  encode_id_bs (Int64.of_int slot_id)
+
+let decode_hnsw_slot_value (bs : bigstring) : int =
+  Int64.to_int (decode_id_bs bs)

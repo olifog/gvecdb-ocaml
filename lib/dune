@@ -3,7 +3,7 @@
   (backend bisect_ppx))
  (name gvecdb)
  (public_name gvecdb)
- (libraries lmdb capnp bigstringaf unix)
+ (libraries lmdb capnp bigstringaf unix threads)
  (foreign_stubs
   (language c)
   (names msync_stubs))
@@ -17,7 +17,11 @@
   props_capnp
   msync
   float32_vec
+  heap
   topk
   vector_file
   knn
+  hnsw
+  hnsw_page
+  hnsw_mvcc
   gvecdb))

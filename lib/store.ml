@@ -1,15 +1,20 @@
-(** Low-level LMDB store operations *)
-
 open Types
 module Bigstring = Bigstringaf
 
 let default_map_size = 10 * 1024 * 1024 * 1024
 
-(** Derive the vector file path from the LMDB database path *)
 let vector_file_path (lmdb_path : string) : string =
   (* LMDB path is the .db file, vector file is alongside it *)
   let base = Filename.remove_extension lmdb_path in
   base ^ ".vectors"
+
+let hnsw_dir_path (lmdb_path : string) : string =
+  let base = Filename.remove_extension lmdb_path in
+  base ^ ".hnsw"
+
+let hnsw_file_path (lmdb_path : string) (tag : string) : string =
+  let dir = hnsw_dir_path lmdb_path in
+  Filename.concat dir (tag ^ ".hnsw")
 
 let create ?(map_size = default_map_size) (path : string) : (t, error) result =
   (* First try to create the vector file *)
@@ -20,7 +25,7 @@ let create ?(map_size = default_map_size) (path : string) : (t, error) result =
       match
         wrap_lmdb_exn (fun () ->
             let flags = Lmdb.Env.Flags.no_subdir in
-            let max_maps = 12 in
+            let max_maps = 13 in
             let env = Lmdb.Env.create Lmdb.Rw ~max_maps ~map_size ~flags path in
 
             let nodes =
@@ -67,6 +72,10 @@ let create ?(map_size = default_map_size) (path : string) : (t, error) result =
               Lmdb.Map.create Lmdb.Map.Nodup ~name:"vector_owners"
                 ~key:Lmdb.Conv.bigstring ~value:Lmdb.Conv.bigstring env
             in
+            let hnsw_slots =
+              Lmdb.Map.create Lmdb.Map.Nodup ~name:"hnsw_slots"
+                ~key:Lmdb.Conv.bigstring ~value:Lmdb.Conv.bigstring env
+            in
 
             let db =
               {
@@ -83,6 +92,7 @@ let create ?(map_size = default_map_size) (path : string) : (t, error) result =
                 vector_file;
                 vector_index;
                 vector_owners;
+                hnsw_slots;
               }
             in
 
