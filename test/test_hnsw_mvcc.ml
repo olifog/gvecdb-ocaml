@@ -107,7 +107,7 @@ let test_create_new_file () =
   let path = temp_path dir "test" in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
+      ~params:Gvecdb.Hnsw.default_params ()
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -123,7 +123,7 @@ let test_create_and_reopen () =
   (* Create and write *)
   (match
      Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-       ~params:Gvecdb.Hnsw.default_params
+       ~params:Gvecdb.Hnsw.default_params ()
    with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -170,7 +170,7 @@ let test_write_transaction () =
   let path = temp_path dir "test" in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
+      ~params:Gvecdb.Hnsw.default_params ()
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -203,7 +203,7 @@ let test_rollback () =
   let path = temp_path dir "test" in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
+      ~params:Gvecdb.Hnsw.default_params ()
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -231,7 +231,7 @@ let test_reader_snapshot_isolation () =
   let path = temp_path dir "test" in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
+      ~params:Gvecdb.Hnsw.default_params ()
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -288,40 +288,6 @@ let test_reader_snapshot_isolation () =
 
 (** {1 Epoch Reference Counting Tests} *)
 
-let test_epoch_gc () =
-  with_temp_dir "gc" @@ fun dir ->
-  let path = temp_path dir "test" in
-  match
-    Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
-  with
-  | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
-  | Ok mvcc ->
-      (* Create multiple epochs *)
-      for i = 0 to 4 do
-        let node : Gvecdb.Hnsw_page.node_data =
-          {
-            layer_count = 1;
-            neighbors = [| Array.make 32 (-1) |];
-            vector_id = Int64.of_int i;
-            vector_offset = Int64.of_int (i * 100);
-            deleted = false;
-          }
-        in
-        match
-          Gvecdb.Hnsw_mvcc.write_nodes mvcc
-            [ (i, node) ]
-            ~entry_point:0 ~max_level:0 ~dimension:64
-        with
-        | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
-        | Ok () -> ()
-      done;
-      (* With no active readers, GC should clean old epochs *)
-      let cleaned = Gvecdb.Hnsw_mvcc.gc_old_epochs mvcc in
-      (* At minimum, some epochs should be tracked *)
-      check bool "gc ran" true (cleaned >= 0);
-      Gvecdb.Hnsw_mvcc.close mvcc
-
 (** {1 Copy-on-Write Tests} *)
 
 let test_cow_preserves_original () =
@@ -329,7 +295,7 @@ let test_cow_preserves_original () =
   let path = temp_path dir "test" in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
+      ~params:Gvecdb.Hnsw.default_params ()
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -388,7 +354,7 @@ let test_large_index () =
   let path = temp_path dir "test" in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
+      ~params:Gvecdb.Hnsw.default_params ()
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -439,7 +405,7 @@ let test_read_out_of_bounds () =
   let path = temp_path dir "test" in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
-      ~params:Gvecdb.Hnsw.default_params
+      ~params:Gvecdb.Hnsw.default_params ()
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -479,7 +445,6 @@ let file_tests =
 let snapshot_tests =
   [
     ("reader snapshot isolation", `Quick, test_reader_snapshot_isolation);
-    ("epoch gc", `Quick, test_epoch_gc);
     ("cow preserves original", `Quick, test_cow_preserves_original);
   ]
 
@@ -492,10 +457,11 @@ let test_max_layers_constraint () =
   let bad_params = { Gvecdb.Hnsw.default_params with max_layers = 10 } in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine ~params:bad_params
+      ()
   with
   | Error (Gvecdb.Hnsw_mvcc.Corrupted_data msg) ->
       check bool "error mentions max_layers" true (String.length msg > 0)
-  | Error _ -> fail "expected Corrupted_data error for max_layers > 5"
+  | Error _ -> fail "expected Corrupted_data error for max_layers > 7"
   | Ok mvcc ->
       Gvecdb.Hnsw_mvcc.close mvcc;
       fail "expected error for max_layers=10, got Ok"

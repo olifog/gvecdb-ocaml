@@ -31,6 +31,11 @@ let norm_sq (v : t) : float =
   done;
   !sum
 
+external dot_f32_f64 :
+  t -> float array -> (int [@untagged]) -> (float [@unboxed]) =
+  "gvecdb_dot_f32_f64_bc" "gvecdb_dot_f32_f64"
+  [@@noalloc]
+
 let dot_with_array (v : t) (arr : float array) : float =
   let n = dim v in
   if n <> Array.length arr then
@@ -38,13 +43,8 @@ let dot_with_array (v : t) (arr : float array) : float =
       (Printf.sprintf
          "Float32_vec.dot_with_array: dimension mismatch (%d vs %d)" n
          (Array.length arr))
-  else begin
-    let sum = ref 0.0 in
-    for i = 0 to n - 1 do
-      sum := !sum +. (get v i *. arr.(i))
-    done;
-    !sum
-  end
+  else
+    dot_f32_f64 v arr n
 
 let dot (v1 : t) (v2 : t) : float =
   let n = dim v1 in

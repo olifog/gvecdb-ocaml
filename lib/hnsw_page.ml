@@ -1,19 +1,39 @@
 type bigstring = Common.bigstring
 
 let page_size = 4096
-let nodes_per_page = 10
-let node_size = 392
+let max_supported_layers = 7
 let layer0_max_neighbors = 32
-let layer_max_neighbors = 8
-let node_layer_count_off = 0
+let upper_layer_max_neighbors = 8
+
+(* Node layout
+
+   [layer_count : 1 byte] [padding : 7 bytes]
+   [layer 0 neighbors : layer0_max_neighbors * 4 bytes]
+   [layer 1..N neighbors : upper_layer_max_neighbors * 4 bytes each]
+   [vector_id : 8 bytes] [vector_offset : 8 bytes] [deleted : 1 byte]
+   [padding to node_size] *)
+
 let node_layer0_off = 8
-let node_layer1_off = 136
-let node_layer2_off = 168
-let node_layer3_off = 200
-let node_layer4_off = 232
-let node_vector_id_off = 264
-let node_vector_offset_off = 272
-let node_deleted_off = 280
+let layer0_size = layer0_max_neighbors * 4
+let upper_layer_size = upper_layer_max_neighbors * 4
+
+let layer_offset layer =
+  if layer = 0 then node_layer0_off
+  else node_layer0_off + layer0_size + (layer - 1) * upper_layer_size
+
+let layer_neighbor_count layer =
+  if layer = 0 then layer0_max_neighbors else upper_layer_max_neighbors
+
+let metadata_offset =
+  node_layer0_off + layer0_size + (max_supported_layers - 1) * upper_layer_size
+
+let node_vector_id_off = metadata_offset
+let node_vector_offset_off = metadata_offset + 8
+let node_deleted_off = metadata_offset + 16
+let node_data_end = node_deleted_off + 1
+let nodes_per_page = page_size / node_data_end
+let node_size = page_size / nodes_per_page
+let node_layer_count_off = 0
 let slot_to_page slot_id = slot_id / nodes_per_page
 let slot_offset_in_page slot_id = slot_id mod nodes_per_page * node_size
 
@@ -46,29 +66,22 @@ type node_data = {
 }
 
 let read_node_from_page (page : bytes) ~offset : node_data =
-  let get_i32 off = Bytes.get_int32_le page (offset + off) |> Int32.to_int in
-  let get_i64 off = Bytes.get_int64_le page (offset + off) in
   let layer_count =
     Char.code (Bytes.get page (offset + node_layer_count_off))
   in
-  let layer_count = max 1 (min layer_count 5) in
+  let layer_count = max 1 (min layer_count max_supported_layers) in
   let neighbors =
     Array.init layer_count (fun layer ->
-        let base, count =
-          match layer with
-          | 0 -> (node_layer0_off, layer0_max_neighbors)
-          | 1 -> (node_layer1_off, layer_max_neighbors)
-          | 2 -> (node_layer2_off, layer_max_neighbors)
-          | 3 -> (node_layer3_off, layer_max_neighbors)
-          | _ -> (node_layer4_off, layer_max_neighbors)
-        in
-        Array.init count (fun i -> get_i32 (base + (i * 4))))
+        let base = layer_offset layer in
+        let count = layer_neighbor_count layer in
+        Array.init count (fun i ->
+            Bytes.get_int32_le page (offset + base + i * 4) |> Int32.to_int))
   in
   {
     layer_count;
     neighbors;
-    vector_id = get_i64 node_vector_id_off;
-    vector_offset = get_i64 node_vector_offset_off;
+    vector_id = Bytes.get_int64_le page (offset + node_vector_id_off);
+    vector_offset = Bytes.get_int64_le page (offset + node_vector_offset_off);
     deleted = Bytes.get page (offset + node_deleted_off) <> '\x00';
   }
 
@@ -77,21 +90,18 @@ let write_node_to_page (page : bytes) ~offset (n : node_data) =
   for i = 1 to 7 do
     Bytes.set page (offset + i) '\x00'
   done;
-  let write_layer base count layer_idx =
+  for layer = 0 to max_supported_layers - 1 do
+    let base = layer_offset layer in
+    let count = layer_neighbor_count layer in
     let actual =
-      if layer_idx < Array.length n.neighbors then n.neighbors.(layer_idx)
+      if layer < Array.length n.neighbors then n.neighbors.(layer)
       else [||]
     in
     for i = 0 to count - 1 do
       let v = if i < Array.length actual then actual.(i) else -1 in
-      Bytes.set_int32_le page (offset + base + (i * 4)) (Int32.of_int v)
+      Bytes.set_int32_le page (offset + base + i * 4) (Int32.of_int v)
     done
-  in
-  write_layer node_layer0_off layer0_max_neighbors 0;
-  write_layer node_layer1_off layer_max_neighbors 1;
-  write_layer node_layer2_off layer_max_neighbors 2;
-  write_layer node_layer3_off layer_max_neighbors 3;
-  write_layer node_layer4_off layer_max_neighbors 4;
+  done;
   Bytes.set_int64_le page (offset + node_vector_id_off) n.vector_id;
   Bytes.set_int64_le page (offset + node_vector_offset_off) n.vector_offset;
   Bytes.set page
@@ -105,31 +115,24 @@ let create_empty_page () = Bytes.make page_size '\x00'
 let copy_page src = Bytes.copy src
 
 let read_node_from_mmap (mmap : bigstring) ~file_offset : node_data =
-  let get_i32 off =
-    Bigstringaf.get_int32_le mmap (file_offset + off) |> Int32.to_int
-  in
-  let get_i64 off = Bigstringaf.get_int64_le mmap (file_offset + off) in
   let layer_count =
     Char.code (Bigstringaf.get mmap (file_offset + node_layer_count_off))
   in
-  let layer_count = max 1 (min layer_count 5) in
+  let layer_count = max 1 (min layer_count max_supported_layers) in
   let neighbors =
     Array.init layer_count (fun layer ->
-        let base, count =
-          match layer with
-          | 0 -> (node_layer0_off, layer0_max_neighbors)
-          | 1 -> (node_layer1_off, layer_max_neighbors)
-          | 2 -> (node_layer2_off, layer_max_neighbors)
-          | 3 -> (node_layer3_off, layer_max_neighbors)
-          | _ -> (node_layer4_off, layer_max_neighbors)
-        in
-        Array.init count (fun i -> get_i32 (base + (i * 4))))
+        let base = layer_offset layer in
+        let count = layer_neighbor_count layer in
+        Array.init count (fun i ->
+            Bigstringaf.get_int32_le mmap (file_offset + base + i * 4)
+            |> Int32.to_int))
   in
   {
     layer_count;
     neighbors;
-    vector_id = get_i64 node_vector_id_off;
-    vector_offset = get_i64 node_vector_offset_off;
+    vector_id = Bigstringaf.get_int64_le mmap (file_offset + node_vector_id_off);
+    vector_offset =
+      Bigstringaf.get_int64_le mmap (file_offset + node_vector_offset_off);
     deleted = Bigstringaf.get mmap (file_offset + node_deleted_off) <> '\x00';
   }
 
@@ -143,3 +146,24 @@ let mmap_to_bytes (mmap : bigstring) ~offset ~len =
   let b = Bytes.create len in
   Bigstringaf.blit_to_bytes mmap ~src_off:offset b ~dst_off:0 ~len;
   b
+
+let mmap_layer_count (mmap : bigstring) ~file_offset =
+  let lc = Char.code (Bigstringaf.get mmap (file_offset + node_layer_count_off)) in
+  max 1 (min lc max_supported_layers)
+
+let mmap_is_deleted (mmap : bigstring) ~file_offset =
+  Bigstringaf.get mmap (file_offset + node_deleted_off) <> '\x00'
+
+let mmap_vector_offset (mmap : bigstring) ~file_offset =
+  Bigstringaf.get_int64_le mmap (file_offset + node_vector_offset_off)
+
+let mmap_vector_id (mmap : bigstring) ~file_offset =
+  Bigstringaf.get_int64_le mmap (file_offset + node_vector_id_off)
+
+let iter_neighbors_mmap (mmap : bigstring) ~file_offset ~layer ~f =
+  let base = layer_offset layer in
+  let count = layer_neighbor_count layer in
+  for i = 0 to count - 1 do
+    let n = Bigstringaf.get_int32_le mmap (file_offset + base + i * 4) |> Int32.to_int in
+    if n >= 0 then f n
+  done

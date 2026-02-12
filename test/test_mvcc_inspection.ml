@@ -8,11 +8,10 @@ module Bigstring = Bigstringaf
 
 (* Constants from hnsw_mvcc.ml *)
 let magic = "GVECHNSW"
-let current_version = 2L
+let current_version = 3L
 let superblock_size = 4096
-let page_table_size = 65536
-let free_list_size = 4096
-let _header_size = superblock_size + (2 * page_table_size) + free_list_size
+let page_table_size = 4194304
+let _header_size = superblock_size + (2 * page_table_size)
 
 (* Superblock offsets *)
 let sb_magic_off = 0
@@ -37,22 +36,18 @@ let pt_max_data_offset_off = 40
 let pt_offsets_off = 48
 
 (* Free list offsets *)
-let fl_count_off = 0
-let fl_entries_off = 8
 
-(* Node layout from hnsw_page.ml *)
-let page_size = 4096
-let nodes_per_page = 10
-let node_size = 392
-let node_layer_count_off = 0
-let node_layer0_off = 8
-let node_vector_id_off = 264
-let node_vector_offset_off = 272
-let node_deleted_off = 280
-let layer0_max_neighbors = 32
+(* Node layout - derived from Hnsw_page *)
+let page_size = Gvecdb.Hnsw_page.page_size
+let nodes_per_page = Gvecdb.Hnsw_page.nodes_per_page
+let node_size = Gvecdb.Hnsw_page.node_size
+let node_layer_count_off = Gvecdb.Hnsw_page.node_layer_count_off
+let node_layer0_off = Gvecdb.Hnsw_page.node_layer0_off
+let node_vector_id_off = Gvecdb.Hnsw_page.node_vector_id_off
+let node_vector_offset_off = Gvecdb.Hnsw_page.node_vector_offset_off
+let node_deleted_off = Gvecdb.Hnsw_page.node_deleted_off
+let layer0_max_neighbors = Gvecdb.Hnsw_page.layer0_max_neighbors
 let page_table_offset which = superblock_size + (which * page_table_size)
-let free_list_offset () = superblock_size + (2 * page_table_size)
-
 (* CRC32 computation - must match hnsw_page.ml *)
 let crc32_table =
   Array.init 256 (fun i ->
@@ -143,9 +138,6 @@ type inspection_result = {
   (* Shadow Page Table *)
   shadow_epoch : int64;
   shadow_node_count : int; [@warning "-69"]
-  (* Free List *)
-  fl_count : int;
-  fl_entries : int64 list; [@warning "-69"]
   (* Sample Nodes *)
   sample_nodes : (int * node_inspection) list;
 }
@@ -270,26 +262,6 @@ let inspect_mvcc_file path : inspection_result =
   Printf.printf "  epoch: %Ld\n" shadow_epoch;
   Printf.printf "  node_count: %d\n" shadow_node_count;
 
-  (* Free List *)
-  let fl_base = free_list_offset () in
-  Printf.printf "\n--- Free List (offset %d) ---\n" fl_base;
-  let fl_count = get_i64 buf (fl_base + fl_count_off) |> Int64.to_int in
-  Printf.printf "  count: %d\n" fl_count;
-  let fl_entries =
-    List.init (min fl_count 10) (fun i ->
-        get_i64 buf (fl_base + fl_entries_off + (i * 8)))
-  in
-  if fl_count > 0 then begin
-    Printf.printf "  entries: [";
-    List.iteri
-      (fun i off ->
-        Printf.printf "%Ld%s" off
-          (if i < List.length fl_entries - 1 then ", " else ""))
-      fl_entries;
-    if fl_count > 10 then Printf.printf ", ...";
-    Printf.printf "]\n"
-  end;
-
   (* Sample Nodes *)
   Printf.printf "\n--- Sample Nodes ---\n";
   let sample_slots =
@@ -379,8 +351,6 @@ let inspect_mvcc_file path : inspection_result =
     pt_page_offsets;
     shadow_epoch;
     shadow_node_count;
-    fl_count;
-    fl_entries;
     sample_nodes;
   }
 
@@ -534,9 +504,6 @@ let test_delete_and_inspect () =
   in
   Printf.printf "Deleted nodes in sample: %d/%d\n" deleted_count
     (List.length result.sample_nodes);
-
-  (* Free list should have recycled pages *)
-  Printf.printf "Free list count: %d\n" result.fl_count;
 
   cleanup_db_files base_path
 

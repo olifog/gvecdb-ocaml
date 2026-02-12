@@ -12,6 +12,6 @@ let default_params =
     m;
     m_max = 8;
     ef_construction = 200;
-    max_layers = 5;
+    max_layers = 7;
     ml = 1.0 /. log (float_of_int m);
   }

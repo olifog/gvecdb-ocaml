@@ -35,6 +35,11 @@ type vector_info = {
   vector_tag : string;
 }
 
+type distance_metric =
+  | Euclidean
+  | Cosine
+  | DotProduct  (** negative dot product *)
+
 type t
 
 (** {1 errors} *)
@@ -178,11 +183,14 @@ val get_edge_props_capnp :
 
 (** create vector on a node. [~normalize:true] (default) stores unit-length
     vectors for fast cosine similarity with original magnitude preserved in
-    metadata. requires explicit transaction *)
+    metadata. [~metric] sets the HNSW index metric when the index is first
+    created for this vector tag (default [Cosine]). ignored if an index
+    already exists for the tag. requires explicit transaction *)
 val create_vector :
   t ->
   txn:[> `Read | `Write ] txn ->
   ?normalize:bool ->
+  ?metric:distance_metric ->
   node_id ->
   string ->
   bigstring ->
@@ -192,6 +200,7 @@ val create_edge_vector :
   t ->
   txn:[> `Read | `Write ] txn ->
   ?normalize:bool ->
+  ?metric:distance_metric ->
   edge_id ->
   string ->
   bigstring ->
@@ -200,8 +209,8 @@ val create_edge_vector :
 val vector_exists :
   t -> ?txn:[> `Read ] txn -> vector_id -> (bool, error) result
   
-  (** returns normalized vector if stored with [~normalize:true]. zero-copy view
-      into mmap, only valid within current transaction *)
+(** returns normalized vector if stored with [~normalize:true]. zero-copy view
+    into mmap, only valid within current transaction *)
 val get_vector :
   t -> ?txn:[> `Read ] txn -> vector_id -> (bigstring, error) result
 
@@ -228,11 +237,6 @@ val get_vectors_for_edge :
   (vector_info list, error) result
 
 (** {1 k-NN search} *)
-
-type distance_metric =
-  | Euclidean
-  | Cosine
-  | DotProduct  (** negative dot product *)
 
 type knn_result = {
   vector_id : vector_id;

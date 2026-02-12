@@ -415,20 +415,24 @@ let get_inbound_edges_by_type (t : t) ?txn (node_id : node_id)
       scan_adjacency_index t ?txn ~direction:Inbound ~node_id t.db.inbound
         prefix
 
-let make_compute_distance vector_file metric normalized_query query_norm vec_arr
-    dim =
- fun other_offset ->
-  match Vector_file.read_vector_with_header vector_file other_offset with
-  | Error _ -> infinity
-  | Ok (other_bs, hdr) ->
-      let other_norm = hdr.Vector_file.norm in
-      if Vector_file.is_normalized hdr then
-        Knn.compute_distance_normalized metric normalized_query query_norm
-          other_bs other_norm dim
-      else
-        let query_norm_sq = query_norm *. query_norm in
-        Knn.compute_distance_raw metric vec_arr query_norm_sq other_bs
-          other_norm dim
+external dist_from_mmap :
+  Common.bigstring ->
+  float array ->
+  (int [@untagged]) ->
+  (float [@unboxed]) ->
+  (int [@untagged]) ->
+  (int [@untagged]) ->
+  (float [@unboxed]) =
+  "gvecdb_dist_from_mmap_bc" "gvecdb_dist_from_mmap"
+  [@@noalloc]
+
+let make_compute_distance (vector_file : Vector_file.t) metric normalized_query
+    query_norm _vec_arr dim =
+  let mmap = vector_file.mmap in
+  let metric_int = Types.metric_to_int metric in
+  fun other_offset ->
+    dist_from_mmap mmap normalized_query (Int64.to_int other_offset) query_norm
+      metric_int dim
 
 let compute_pairwise_distance vector_file metric offset_a offset_b =
   match
@@ -452,21 +456,22 @@ let compute_pairwise_distance vector_file metric offset_a offset_b =
             hdr_b.Vector_file.norm dim_a
   | _ -> infinity
 
-let get_or_create_hnsw_mvcc t vector_tag =
+let get_or_create_hnsw_mvcc t ?(metric = Cosine) vector_tag =
   match Hashtbl.find_opt t.hnsw_mvcc vector_tag with
   | Some f -> Some f
   | None -> (
       let file_path = Store.hnsw_file_path t.db_path vector_tag ^ ".mvcc" in
       match
-        Hnsw_mvcc.create file_path ~metric:Cosine ~params:Hnsw.default_params
+        Hnsw_mvcc.create file_path ~metric ~params:Hnsw.default_params ()
       with
       | Error _ -> None
       | Ok f ->
           Hashtbl.replace t.hnsw_mvcc vector_tag f;
           Some f)
 
-let create_vector_internal (t : t) ~txn ~normalize (owner_kind : owner_kind)
-    (owner_id : id) (vector_tag : string) (data : bigstring) :
+let create_vector_internal (t : t) ~txn ~normalize ~metric
+    (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
+    (data : bigstring) :
     (vector_id, error) result =
   let* vector_tag_id = Store.intern t.db ~txn vector_tag in
   let dim = Float32_vec.dim data in
@@ -550,17 +555,23 @@ let create_vector_internal (t : t) ~txn ~normalize (owner_kind : owner_kind)
                                 (Keys.encode_hnsw_slot_value slot_id);
                               vector_id))))))
 
-let create_vector (t : t) ~txn ?(normalize = true) (node_id : node_id)
-    (vector_tag : string) (data : bigstring) : (vector_id, error) result =
+let create_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
+    (node_id : node_id) (vector_tag : string) (data : bigstring) :
+    (vector_id, error) result =
   let* exists = node_exists t ~txn node_id in
   if not exists then Error (Node_not_found node_id)
-  else create_vector_internal t ~txn ~normalize Node node_id vector_tag data
+  else
+    create_vector_internal t ~txn ~normalize ~metric Node node_id vector_tag
+      data
 
-let create_edge_vector (t : t) ~txn ?(normalize = true) (edge_id : edge_id)
-    (vector_tag : string) (data : bigstring) : (vector_id, error) result =
+let create_edge_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
+    (edge_id : edge_id) (vector_tag : string) (data : bigstring) :
+    (vector_id, error) result =
   let* exists = edge_exists t ~txn edge_id in
   if not exists then Error (Edge_not_found edge_id)
-  else create_vector_internal t ~txn ~normalize Edge edge_id vector_tag data
+  else
+    create_vector_internal t ~txn ~normalize ~metric Edge edge_id vector_tag
+      data
 
 let vector_exists (t : t) ?txn (vector_id : vector_id) : (bool, error) result =
   try
@@ -846,18 +857,13 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
               else begin
                 let normalized_query = Array.copy query in
                 let query_norm = Knn.normalize_array normalized_query in
-                let dist_from_query =
+                let dist_from_offset =
                   make_compute_distance t.db.vector_file metric normalized_query
                     query_norm query dim
                 in
-                let query_dist slot_id =
-                  match Hnsw_mvcc.read_node mvcc table ~slot_id with
-                  | None -> infinity
-                  | Some node -> dist_from_query node.vector_offset
-                in
 
                 let ctx =
-                  Hnsw_mvcc.create_search_context mvcc table ~query_dist
+                  Hnsw_mvcc.create_search_context mvcc table ~dist_from_offset
                     ~overlay:None
                 in
                 let results = Hnsw_mvcc.search_mvcc ctx ~k ~ef in

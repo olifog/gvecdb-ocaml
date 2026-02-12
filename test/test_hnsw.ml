@@ -322,7 +322,8 @@ let test_rebuild_hnsw_index () =
   in
 
   (* Rebuild index *)
-  ok_exn (Gvecdb.rebuild_hnsw_index db ~vector_tag:"e" ());
+  with_txn db (fun txn ->
+      ok_exn (Gvecdb.rebuild_hnsw_index db ~txn ~vector_tag:"e" ()));
 
   (* Search should still work *)
   let results =
@@ -930,7 +931,8 @@ let test_rebuild_then_delete () =
         (v1, v2))
   in
   (* Rebuild index - this should update slot mappings *)
-  ok_exn (Gvecdb.rebuild_hnsw_index db ~vector_tag:"e" ());
+  with_txn db (fun txn ->
+      ok_exn (Gvecdb.rebuild_hnsw_index db ~txn ~vector_tag:"e" ()));
 
   (* Search should find both vectors *)
   let results_before =

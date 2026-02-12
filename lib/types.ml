@@ -44,6 +44,9 @@ type vector_info = {
 
 type distance_metric = Euclidean | Cosine | DotProduct
 
+let metric_to_int = function Euclidean -> 0 | Cosine -> 1 | DotProduct -> 2
+let metric_of_int = function 0 -> Euclidean | 1 -> Cosine | _ -> DotProduct
+
 type knn_result = {
   vector_id : vector_id;
   owner_kind : owner_kind;

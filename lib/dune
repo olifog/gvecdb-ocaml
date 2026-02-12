@@ -6,7 +6,8 @@
  (libraries lmdb capnp bigstringaf unix threads)
  (foreign_stubs
   (language c)
-  (names msync_stubs))
+  (names msync_stubs float32_stubs)
+  (flags (:standard -march=native -O3)))
  (modules
   common
   types

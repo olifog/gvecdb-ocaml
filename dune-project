@@ -25,6 +25,7 @@
    capnp
    conf-capnproto
    bigstringaf
+   yojson
    (alcotest :with-test)
    (bisect_ppx :with-test)
  )

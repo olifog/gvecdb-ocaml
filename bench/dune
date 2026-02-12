@@ -1,0 +1,24 @@
+(library
+ (name bench_common)
+ (modules bench_common)
+ (libraries gvecdb yojson bigstringaf unix))
+
+(executable
+ (name bench_ann)
+ (modules bench_ann)
+ (libraries bench_common gvecdb yojson bigstringaf unix))
+
+(executable
+ (name bench_insert)
+ (modules bench_insert)
+ (libraries bench_common gvecdb yojson bigstringaf unix))
+
+(executable
+ (name bench_graph)
+ (modules bench_graph)
+ (libraries bench_common gvecdb yojson bigstringaf unix))
+
+(executable
+ (name bench_props)
+ (modules bench_props)
+ (libraries bench_common gvecdb yojson test_schemas capnp bigstringaf stdint unix))
