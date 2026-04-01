@@ -40,7 +40,7 @@ let bench_batched ~vectors ~dim ~batch_size =
     with_txn db (fun txn ->
       for j = !i to batch_end - 1 do
         let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
-        ignore (ok_exn (Gvecdb.create_vector db ~txn node "v"
+        ignore (ok_exn (Gvecdb.create_vector db ~txn Node node "v"
           (floats_to_bigstring vectors.(j))));
       done);
     let t1 = Unix.gettimeofday () in
@@ -67,7 +67,7 @@ let bench_single_txn ~vectors ~dim ~n_sample =
     let ((), lat_us) = time_us (fun () ->
       with_txn db (fun txn ->
         let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
-        ignore (ok_exn (Gvecdb.create_vector db ~txn node "v"
+        ignore (ok_exn (Gvecdb.create_vector db ~txn Node node "v"
           (floats_to_bigstring vectors.(i)))))) in
     progress ~label:"single-txn insert" ~i ~n;
     lat_us

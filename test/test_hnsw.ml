@@ -35,7 +35,7 @@ let test_hnsw_single_vector () =
   let v1 =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "embedding"
+          (Gvecdb.create_vector db ~txn Node n1 "embedding"
              (floats_to_bigstring [| 1.0; 0.0 |])))
   in
   let query = [| 1.0; 0.0 |] in
@@ -57,17 +57,17 @@ let test_hnsw_euclidean () =
     with_txn db (fun txn ->
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 0.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n3 "e"
+            (Gvecdb.create_vector db ~txn Node n3 "e"
                (floats_to_bigstring [| 10.0; 10.0 |]))
         in
         v2)
@@ -90,12 +90,12 @@ let test_hnsw_cosine () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 0.0; 1.0 |]))
         in
         v1)
@@ -117,12 +117,12 @@ let test_hnsw_dot_product () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 2.0; 0.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 1.0; 1.0 |]))
         in
         v1)
@@ -145,12 +145,12 @@ let test_hnsw_per_tag_isolation () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "tag_a"
+            (Gvecdb.create_vector db ~txn Node n1 "tag_a"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "tag_b"
+            (Gvecdb.create_vector db ~txn Node n2 "tag_b"
                (floats_to_bigstring [| 0.0; 1.0 |]))
         in
         (v1, v2))
@@ -191,12 +191,12 @@ let test_hnsw_soft_delete () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 0.9; 0.1 |]))
         in
         (v1, v2))
@@ -240,7 +240,7 @@ let test_hnsw_recall () =
             let vec = random_vector dim in
             let vid =
               ok_exn
-                (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))
+                (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))
             in
             (vid, vec)))
   in
@@ -281,21 +281,21 @@ let test_hnsw_recall () =
   check bool "got some results" true (List.length hnsw_results > 0);
   ignore vectors
 
-(** {1 knn_hnsw_bs tests} *)
+(** {1 knn_hnsw from float array tests} *)
 
-let test_hnsw_bs () =
+let test_hnsw_float_array () =
   with_temp_db "hnsw" @@ fun db ->
   let n1 = ok_exn (Gvecdb.create_node db "doc") in
   let v1 =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e"
+          (Gvecdb.create_vector db ~txn Node n1 "e"
              (floats_to_bigstring [| 1.0; 2.0 |])))
   in
-  let query_bs = floats_to_bigstring [| 1.1; 2.1 |] in
+  let query = [| 1.1; 2.1 |] in
   let results =
     ok_exn
-      (Gvecdb.knn_hnsw_bs db ~metric:Cosine ~k:1 ~ef:50 ~vector_tag:"e" query_bs)
+      (Gvecdb.knn_hnsw db ~metric:Cosine ~k:1 ~ef:50 ~vector_tag:"e" query)
   in
   check int "one result" 1 (List.length results);
   check int64 "nearest is v1" v1 (List.hd results).Gvecdb.vector_id
@@ -310,12 +310,12 @@ let test_rebuild_hnsw_index () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 0.0; 1.0 |]))
         in
         (v1, v2))
@@ -349,7 +349,7 @@ let test_hnsw_many_vectors () =
         let vec = random_vector dim in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))
+            (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))
         in
         ()
       done);
@@ -409,7 +409,7 @@ let test_persistence_roundtrip () =
         let vec = random_vector dim in
         let vid =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))
+            (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))
         in
         vectors := (vid, vec) :: !vectors
       done);
@@ -469,12 +469,12 @@ let test_delete_persistence () =
         let n2 = ok_exn (Gvecdb.create_node db ~txn "doc") in
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 0.0; 0.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 0.0; 1.0; 0.0; 0.0 |]))
         in
         (v1, v2))
@@ -516,7 +516,7 @@ let test_entry_point_deletion () =
     with_txn db (fun txn ->
         let n1 = ok_exn (Gvecdb.create_node db ~txn "doc") in
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e"
+          (Gvecdb.create_vector db ~txn Node n1 "e"
              (floats_to_bigstring [| 1.0; 0.0; 0.0; 0.0 |])))
   in
 
@@ -545,7 +545,7 @@ let test_entry_point_deletion () =
     with_txn db (fun txn ->
         let n2 = ok_exn (Gvecdb.create_node db ~txn "doc") in
         ok_exn
-          (Gvecdb.create_vector db ~txn n2 "e"
+          (Gvecdb.create_vector db ~txn Node n2 "e"
              (floats_to_bigstring [| 0.0; 1.0; 0.0; 0.0 |])))
   in
 
@@ -572,7 +572,7 @@ let test_k_larger_than_dataset () =
           Array.init dim (fun j -> if j = 0 then float_of_int i else 0.0)
         in
         let _ =
-          ok_exn (Gvecdb.create_vector db ~txn n "e" (floats_to_bigstring vec))
+          ok_exn (Gvecdb.create_vector db ~txn Node n "e" (floats_to_bigstring vec))
         in
         ()
       done);
@@ -592,7 +592,7 @@ let test_zero_vector_query () =
       let n = ok_exn (Gvecdb.create_node db ~txn "doc") in
       let _ =
         ok_exn
-          (Gvecdb.create_vector db ~txn n "e"
+          (Gvecdb.create_vector db ~txn Node n "e"
              (floats_to_bigstring [| 1.0; 0.0; 0.0; 0.0 |]))
       in
       ());
@@ -612,7 +612,7 @@ let test_insert_delete_reinsert () =
   let v1 =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e"
+          (Gvecdb.create_vector db ~txn Node n1 "e"
              (floats_to_bigstring [| 1.0; 0.0; 0.0; 0.0 |])))
   in
 
@@ -623,7 +623,7 @@ let test_insert_delete_reinsert () =
   let v2 =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e"
+          (Gvecdb.create_vector db ~txn Node n1 "e"
              (floats_to_bigstring [| 0.0; 1.0; 0.0; 0.0 |])))
   in
 
@@ -660,7 +660,7 @@ let test_ef_parameter_sweep () =
         let vec = random_vector dim in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))
+            (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))
         in
         ()
       done);
@@ -713,7 +713,7 @@ let test_k_parameter_sweep () =
         let vec = random_vector dim in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))
+            (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))
         in
         ()
       done);
@@ -753,7 +753,7 @@ let test_dimension_sweep () =
             let vec = random_vector dim in
             let _ =
               ok_exn
-                (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))
+                (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))
             in
             ()
           done);
@@ -794,7 +794,7 @@ let test_large_index () =
         let vec = random_vector dim in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))
+            (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))
         in
         ()
       done);
@@ -828,7 +828,7 @@ let test_heavy_deletion () =
             let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
             let vec = random_vector dim in
             ok_exn
-              (Gvecdb.create_vector db ~txn node "e" (floats_to_bigstring vec))))
+              (Gvecdb.create_vector db ~txn Node node "e" (floats_to_bigstring vec))))
   in
 
   (* Delete first n_delete vectors *)
@@ -879,7 +879,7 @@ let isolation_tests =
 
 let delete_tests = [ ("soft_delete", `Quick, test_hnsw_soft_delete) ]
 let recall_tests = [ ("recall_benchmark", `Slow, test_hnsw_recall) ]
-let bigstring_tests = [ ("knn_hnsw_bs", `Quick, test_hnsw_bs) ]
+let float_array_tests = [ ("knn_hnsw_float_array", `Quick, test_hnsw_float_array) ]
 let rebuild_tests = [ ("rebuild_index", `Quick, test_rebuild_hnsw_index) ]
 
 let persistence_tests =
@@ -920,12 +920,12 @@ let test_rebuild_then_delete () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 0.0; 0.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 0.0; 1.0; 0.0; 0.0 |]))
         in
         (v1, v2))
@@ -962,7 +962,7 @@ let test_dimension_mismatch () =
   with_txn db (fun txn ->
       let _ =
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e"
+          (Gvecdb.create_vector db ~txn Node n1 "e"
              (floats_to_bigstring [| 1.0; 0.0; 0.0; 0.0 |]))
       in
       ());
@@ -993,7 +993,7 @@ let () =
       ("isolation", isolation_tests);
       ("delete", delete_tests);
       ("recall", recall_tests);
-      ("bigstring", bigstring_tests);
+      ("float_array", float_array_tests);
       ("rebuild", rebuild_tests);
       ("persistence", persistence_tests);
       ("edge_cases", edge_case_tests);

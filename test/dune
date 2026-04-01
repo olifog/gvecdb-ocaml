@@ -52,3 +52,8 @@
  (name test_mvcc_inspection)
  (modules test_mvcc_inspection)
  (libraries alcotest gvecdb bigstringaf unix))
+
+(test
+ (name test_schema_filter)
+ (modules test_schema_filter)
+ (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))

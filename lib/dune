@@ -3,7 +3,7 @@
   (backend bisect_ppx))
  (name gvecdb)
  (public_name gvecdb)
- (libraries lmdb capnp bigstringaf unix threads)
+ (libraries lmdb capnp bigstringaf stdint unix threads)
  (foreign_stubs
   (language c)
   (names msync_stubs float32_stubs)
@@ -25,4 +25,8 @@
   hnsw
   hnsw_page
   hnsw_mvcc
+  schema
+  schema_registry
+  dynamic_reader
+  filter
   gvecdb))

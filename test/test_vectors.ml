@@ -27,7 +27,7 @@ let test_create_vector () =
   let data = floats_to_bigstring [| 1.0; 2.0; 3.0 |] in
   let vec_id =
     with_txn db (fun txn ->
-        ok_exn (Gvecdb.create_vector db ~txn node "embedding" data))
+        ok_exn (Gvecdb.create_vector db ~txn Node node "embedding" data))
   in
   check bool "vector exists after creation" true
     (ok_exn (Gvecdb.vector_exists db vec_id))
@@ -39,7 +39,7 @@ let test_get_vector () =
   let data = floats_to_bigstring original in
   let vec_id =
     with_txn db (fun txn ->
-        ok_exn (Gvecdb.create_vector db ~txn node "embedding" data))
+        ok_exn (Gvecdb.create_vector db ~txn Node node "embedding" data))
   in
   let retrieved = ok_exn (Gvecdb.get_vector db vec_id) in
   (* Vectors are stored normalized, so length should be same but values differ *)
@@ -61,7 +61,7 @@ let test_get_vector_unnormalized () =
   let vec_id =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_vector db ~txn ~normalize:false node "embedding" data))
+          (Gvecdb.create_vector db ~txn ~normalize:false Node node "embedding" data))
   in
   let retrieved = ok_exn (Gvecdb.get_vector db vec_id) in
   check int "same length" (Bigstring.length data) (Bigstring.length retrieved);
@@ -78,7 +78,7 @@ let test_get_vector_info () =
   let data = floats_to_bigstring [| 1.0; 2.0; 3.0 |] in
   let vec_id =
     with_txn db (fun txn ->
-        ok_exn (Gvecdb.create_vector db ~txn node "content_embedding" data))
+        ok_exn (Gvecdb.create_vector db ~txn Node node "content_embedding" data))
   in
   let info = ok_exn (Gvecdb.get_vector_info db vec_id) in
   check int64 "correct vector_id" vec_id info.vector_id;
@@ -92,7 +92,7 @@ let test_delete_vector () =
   let data = floats_to_bigstring [| 1.0; 2.0; 3.0 |] in
   let vec_id =
     with_txn db (fun txn ->
-        ok_exn (Gvecdb.create_vector db ~txn node "embedding" data))
+        ok_exn (Gvecdb.create_vector db ~txn Node node "embedding" data))
   in
   check bool "exists before delete" true
     (ok_exn (Gvecdb.vector_exists db vec_id));
@@ -115,7 +115,7 @@ let test_create_vector_node_not_found () =
   with_temp_db "vectors" @@ fun db ->
   let data = floats_to_bigstring [| 1.0; 2.0; 3.0 |] in
   with_txn db (fun txn ->
-      match Gvecdb.create_vector db ~txn 999999L "embedding" data with
+      match Gvecdb.create_vector db ~txn Node 999999L "embedding" data with
       | Error (Gvecdb.Node_not_found _) -> ()
       | _ -> fail "expected Node_not_found error")
 
@@ -128,22 +128,22 @@ let test_multiple_vectors_per_node () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "title_embedding"
+            (Gvecdb.create_vector db ~txn Node node "title_embedding"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "content_embedding"
+            (Gvecdb.create_vector db ~txn Node node "content_embedding"
                (floats_to_bigstring [| 0.0; 1.0 |]))
         in
         let v3 =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "summary_embedding"
+            (Gvecdb.create_vector db ~txn Node node "summary_embedding"
                (floats_to_bigstring [| 0.5; 0.5 |]))
         in
         (v1, v2, v3))
   in
-  let all_vecs = ok_exn (Gvecdb.get_vectors_for_node db node ()) in
+  let all_vecs = ok_exn (Gvecdb.get_vectors db Node node ()) in
   check int "three vectors" 3 (List.length all_vecs);
   let ids = List.map (fun (v : Gvecdb.vector_info) -> v.vector_id) all_vecs in
   check bool "v1 in list" true (List.mem v1 ids);
@@ -157,23 +157,23 @@ let test_get_vectors_by_tag () =
     with_txn db (fun txn ->
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "title"
+            (Gvecdb.create_vector db ~txn Node node "title"
                (floats_to_bigstring [| 1.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "content"
+            (Gvecdb.create_vector db ~txn Node node "content"
                (floats_to_bigstring [| 2.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "title"
+            (Gvecdb.create_vector db ~txn Node node "title"
                (floats_to_bigstring [| 3.0 |]))
         in
         v2)
   in
   let content_vecs =
-    ok_exn (Gvecdb.get_vectors_for_node db node ~vector_tag:"content" ())
+    ok_exn (Gvecdb.get_vectors db Node node ~vector_tag:"content" ())
   in
   check int "one content vector" 1 (List.length content_vecs);
   let first_vec : Gvecdb.vector_info = List.hd content_vecs in
@@ -185,12 +185,12 @@ let test_get_vectors_nonexistent_tag () =
   with_txn db (fun txn ->
       let _ =
         ok_exn
-          (Gvecdb.create_vector db ~txn node "embedding"
+          (Gvecdb.create_vector db ~txn Node node "embedding"
              (floats_to_bigstring [| 1.0 |]))
       in
       ());
   let vecs =
-    ok_exn (Gvecdb.get_vectors_for_node db node ~vector_tag:"nonexistent" ())
+    ok_exn (Gvecdb.get_vectors db Node node ~vector_tag:"nonexistent" ())
   in
   check int "no vectors" 0 (List.length vecs)
 
@@ -201,17 +201,17 @@ let test_vector_ids_sequential () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e"
+            (Gvecdb.create_vector db ~txn Node node "e"
                (floats_to_bigstring [| 1.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e"
+            (Gvecdb.create_vector db ~txn Node node "e"
                (floats_to_bigstring [| 2.0 |]))
         in
         let v3 =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "e"
+            (Gvecdb.create_vector db ~txn Node node "e"
                (floats_to_bigstring [| 3.0 |]))
         in
         (v1, v2, v3))
@@ -231,17 +231,17 @@ let test_knn_euclidean () =
     with_txn db (fun txn ->
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 0.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n3 "e"
+            (Gvecdb.create_vector db ~txn Node n3 "e"
                (floats_to_bigstring [| 10.0; 10.0 |]))
         in
         v2)
@@ -267,12 +267,12 @@ let test_knn_cosine () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 0.0; 1.0 |]))
         in
         v1)
@@ -295,12 +295,12 @@ let test_knn_dot_product () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 2.0; 0.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 1.0; 1.0 |]))
         in
         v1)
@@ -331,12 +331,12 @@ let test_knn_cosine_zero_vector () =
     with_txn db (fun txn ->
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 0.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         v2)
@@ -359,13 +359,13 @@ let test_knn_dimension_mismatch () =
   let v1 =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e"
+          (Gvecdb.create_vector db ~txn Node n1 "e"
              (floats_to_bigstring [| 1.0; 0.0 |])))
   in
   (* Second vector with different dimension should fail *)
   let result =
     with_txn db (fun txn ->
-        Gvecdb.create_vector db ~txn n2 "e"
+        Gvecdb.create_vector db ~txn Node n2 "e"
           (floats_to_bigstring [| 1.0; 0.0; 0.0 |]))
   in
   (match result with
@@ -389,11 +389,11 @@ let test_knn_k_larger_than_db () =
   with_txn db (fun txn ->
       let _ =
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e" (floats_to_bigstring [| 1.0 |]))
+          (Gvecdb.create_vector db ~txn Node n1 "e" (floats_to_bigstring [| 1.0 |]))
       in
       let _ =
         ok_exn
-          (Gvecdb.create_vector db ~txn n1 "e" (floats_to_bigstring [| 2.0 |]))
+          (Gvecdb.create_vector db ~txn Node n1 "e" (floats_to_bigstring [| 2.0 |]))
       in
       ());
   let query = [| 1.5 |] in
@@ -402,26 +402,26 @@ let test_knn_k_larger_than_db () =
   in
   check int "only 2 results" 2 (List.length results)
 
-let test_knn_brute_force_bs () =
+let test_knn_brute_force_from_bigstring () =
   with_temp_db "vectors" @@ fun db ->
   let n1 = ok_exn (Gvecdb.create_node db "doc") in
   let v1 =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 2.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 10.0; 20.0 |]))
         in
         v1)
   in
-  let query_bs = floats_to_bigstring [| 1.1; 2.1 |] in
+  let query = [| 1.1; 2.1 |] in
   let results =
-    ok_exn (Gvecdb.knn_brute_force_bs db ~metric:Euclidean ~k:1 query_bs)
+    ok_exn (Gvecdb.knn_brute_force db ~metric:Euclidean ~k:1 query)
   in
   check int "one result" 1 (List.length results);
   check int64 "nearest is v1" v1 (List.hd results).Gvecdb.vector_id
@@ -435,12 +435,12 @@ let test_knn_mixed_normalized () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 3.0; 0.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_vector db ~txn ~normalize:false n2 "e"
+            (Gvecdb.create_vector db ~txn ~normalize:false Node n2 "e"
                (floats_to_bigstring [| 0.0; 4.0 |]))
         in
         (v1, v2))
@@ -469,7 +469,7 @@ let test_create_edge_vector () =
   let vec_id =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_edge_vector db ~txn edge "relation_embedding" data))
+          (Gvecdb.create_vector db ~txn Edge edge "relation_embedding" data))
   in
   check bool "edge vector exists after creation" true
     (ok_exn (Gvecdb.vector_exists db vec_id))
@@ -483,7 +483,7 @@ let test_get_edge_vector_info () =
   let vec_id =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_edge_vector db ~txn edge "relation_embedding" data))
+          (Gvecdb.create_vector db ~txn Edge edge "relation_embedding" data))
   in
   let info = ok_exn (Gvecdb.get_vector_info db vec_id) in
   check int64 "correct vector_id" vec_id info.vector_id;
@@ -500,7 +500,7 @@ let test_get_edge_vector_data () =
   let data = floats_to_bigstring original in
   let vec_id =
     with_txn db (fun txn ->
-        ok_exn (Gvecdb.create_edge_vector db ~txn edge "embedding" data))
+        ok_exn (Gvecdb.create_vector db ~txn Edge edge "embedding" data))
   in
   let retrieved = ok_exn (Gvecdb.get_vector db vec_id) in
   check int "same length" (Bigstring.length data) (Bigstring.length retrieved);
@@ -517,7 +517,7 @@ let test_create_edge_vector_edge_not_found () =
   with_temp_db "edge_vectors" @@ fun db ->
   let data = floats_to_bigstring [| 1.0; 2.0; 3.0 |] in
   with_txn db (fun txn ->
-      match Gvecdb.create_edge_vector db ~txn 999999L "embedding" data with
+      match Gvecdb.create_vector db ~txn Edge 999999L "embedding" data with
       | Error (Gvecdb.Edge_not_found _) -> ()
       | _ -> fail "expected Edge_not_found error")
 
@@ -529,7 +529,7 @@ let test_delete_edge_vector () =
   let data = floats_to_bigstring [| 1.0; 2.0; 3.0 |] in
   let vec_id =
     with_txn db (fun txn ->
-        ok_exn (Gvecdb.create_edge_vector db ~txn edge "embedding" data))
+        ok_exn (Gvecdb.create_vector db ~txn Edge edge "embedding" data))
   in
   check bool "exists before delete" true
     (ok_exn (Gvecdb.vector_exists db vec_id));
@@ -546,17 +546,17 @@ let test_get_vectors_for_edge () =
     with_txn db (fun txn ->
         let v1 =
           ok_exn
-            (Gvecdb.create_edge_vector db ~txn edge "embedding1"
+            (Gvecdb.create_vector db ~txn Edge edge "embedding1"
                (floats_to_bigstring [| 1.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_edge_vector db ~txn edge "embedding2"
+            (Gvecdb.create_vector db ~txn Edge edge "embedding2"
                (floats_to_bigstring [| 2.0 |]))
         in
         (v1, v2))
   in
-  let all_vecs = ok_exn (Gvecdb.get_vectors_for_edge db edge ()) in
+  let all_vecs = ok_exn (Gvecdb.get_vectors db Edge edge ()) in
   check int "two vectors" 2 (List.length all_vecs);
   let ids = List.map (fun (v : Gvecdb.vector_info) -> v.vector_id) all_vecs in
   check bool "v1 in list" true (List.mem v1 ids);
@@ -571,23 +571,23 @@ let test_get_vectors_for_edge_by_tag () =
     with_txn db (fun txn ->
         let _ =
           ok_exn
-            (Gvecdb.create_edge_vector db ~txn edge "type_a"
+            (Gvecdb.create_vector db ~txn Edge edge "type_a"
                (floats_to_bigstring [| 1.0 |]))
         in
         let v2 =
           ok_exn
-            (Gvecdb.create_edge_vector db ~txn edge "type_b"
+            (Gvecdb.create_vector db ~txn Edge edge "type_b"
                (floats_to_bigstring [| 2.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_edge_vector db ~txn edge "type_a"
+            (Gvecdb.create_vector db ~txn Edge edge "type_a"
                (floats_to_bigstring [| 3.0 |]))
         in
         v2)
   in
   let type_b_vecs =
-    ok_exn (Gvecdb.get_vectors_for_edge db edge ~vector_tag:"type_b" ())
+    ok_exn (Gvecdb.get_vectors db Edge edge ~vector_tag:"type_b" ())
   in
   check int "one type_b vector" 1 (List.length type_b_vecs);
   let first_vec : Gvecdb.vector_info = List.hd type_b_vecs in
@@ -604,17 +604,17 @@ let test_knn_mixed_node_edge_vectors () =
     with_txn db (fun txn ->
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n1 "e"
+            (Gvecdb.create_vector db ~txn Node n1 "e"
                (floats_to_bigstring [| 1.0; 0.0 |]))
         in
         let v_edge =
           ok_exn
-            (Gvecdb.create_edge_vector db ~txn edge "e"
+            (Gvecdb.create_vector db ~txn Edge edge "e"
                (floats_to_bigstring [| 0.0; 0.0 |]))
         in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n2 "e"
+            (Gvecdb.create_vector db ~txn Node n2 "e"
                (floats_to_bigstring [| 10.0; 10.0 |]))
         in
         v_edge)
@@ -669,7 +669,7 @@ let knn_tests =
     ("knn_cosine_zero_vector", `Quick, test_knn_cosine_zero_vector);
     ("knn_dimension_mismatch", `Quick, test_knn_dimension_mismatch);
     ("knn_k_larger_than_db", `Quick, test_knn_k_larger_than_db);
-    ("knn_brute_force_bs", `Quick, test_knn_brute_force_bs);
+    ("knn_brute_force_from_bigstring", `Quick, test_knn_brute_force_from_bigstring);
     ("knn_mixed_normalized", `Quick, test_knn_mixed_normalized);
   ]
 

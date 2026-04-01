@@ -75,7 +75,7 @@ let test_full_graph_lifecycle () =
           with_txn db (fun txn ->
               Array.init n_vecs (fun _ ->
                   ok_exn
-                    (Gvecdb.create_vector db ~txn node "embedding"
+                    (Gvecdb.create_vector db ~txn Node node "embedding"
                        (floats_to_bigstring (random_vector dim)))))
         in
         (node, vecs))
@@ -98,7 +98,7 @@ let test_full_graph_lifecycle () =
       for i = 0 to 29 do
         let _ =
           ok_exn
-            (Gvecdb.create_edge_vector db ~txn edges.(i) "relation_embedding"
+            (Gvecdb.create_vector db ~txn Edge edges.(i) "relation_embedding"
                (floats_to_bigstring (random_vector dim)))
         in
         ()
@@ -108,7 +108,7 @@ let test_full_graph_lifecycle () =
   let total_outbound =
     Array.fold_left
       (fun acc (node, _) ->
-        acc + List.length (ok_exn (Gvecdb.get_outbound_edges db node)))
+        acc + List.length (ok_exn (Gvecdb.get_outbound_edges db node ())))
       0 doc_nodes
   in
   check bool "has outbound edges" true (total_outbound > 0);
@@ -201,7 +201,7 @@ let test_interleaved_operations () =
             let node = node_arr.(Random.int n) in
             let v =
               ok_exn
-                (Gvecdb.create_vector db ~txn node "vec"
+                (Gvecdb.create_vector db ~txn Node node "vec"
                    (floats_to_bigstring (random_vector dim)))
             in
             vectors := v :: !vectors
@@ -268,7 +268,7 @@ let test_multiple_restart_cycles () =
     let v =
       with_txn db (fun txn ->
           ok_exn
-            (Gvecdb.create_vector db ~txn n "emb"
+            (Gvecdb.create_vector db ~txn Node n "emb"
                (floats_to_bigstring
                   (Array.init dim (fun j -> float_of_int ((i * 100) + j))))))
     in
@@ -290,7 +290,7 @@ let test_multiple_restart_cycles () =
     let v =
       with_txn db (fun txn ->
           ok_exn
-            (Gvecdb.create_vector db ~txn n "emb"
+            (Gvecdb.create_vector db ~txn Node n "emb"
                (floats_to_bigstring
                   (Array.init dim (fun j -> float_of_int ((i * 100) + j))))))
     in
@@ -310,7 +310,7 @@ let test_multiple_restart_cycles () =
     let v =
       with_txn db (fun txn ->
           ok_exn
-            (Gvecdb.create_vector db ~txn n "emb"
+            (Gvecdb.create_vector db ~txn Node n "emb"
                (floats_to_bigstring
                   (Array.init dim (fun j -> float_of_int ((i * 100) + j))))))
     in
@@ -357,7 +357,7 @@ let test_large_persistence_recall () =
           (fun vec ->
             let n = ok_exn (Gvecdb.create_node db ~txn "doc") in
             ok_exn
-              (Gvecdb.create_vector db ~txn n "emb" (floats_to_bigstring vec)))
+              (Gvecdb.create_vector db ~txn Node n "emb" (floats_to_bigstring vec)))
           vectors)
   in
 
@@ -437,7 +437,7 @@ let test_graph_structure_persistence () =
   Array.iteri
     (fun i node ->
       (* Each node should have exactly 2 outbound edges *)
-      let outbound = ok_exn (Gvecdb.get_outbound_edges db node) in
+      let outbound = ok_exn (Gvecdb.get_outbound_edges db node ()) in
       check int
         (Printf.sprintf "node %d has 2 outbound" i)
         2 (List.length outbound);
@@ -448,7 +448,7 @@ let test_graph_structure_persistence () =
       check bool "has skip edge" true (List.mem "skip" types);
 
       (* Each node should have exactly 2 inbound edges (from i-1 and i-3 mod 20) *)
-      let inbound = ok_exn (Gvecdb.get_inbound_edges db node) in
+      let inbound = ok_exn (Gvecdb.get_inbound_edges db node ()) in
       check int
         (Printf.sprintf "node %d has 2 inbound" i)
         2 (List.length inbound))
@@ -474,7 +474,7 @@ let test_concurrent_readers_single_writer () =
         let n = ok_exn (Gvecdb.create_node db ~txn "doc") in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "emb"
+            (Gvecdb.create_vector db ~txn Node n "emb"
                (floats_to_bigstring (random_vector dim)))
         in
         ()
@@ -522,7 +522,7 @@ let test_concurrent_readers_single_writer () =
                 let n = ok_exn (Gvecdb.create_node db ~txn "doc") in
                 let _ =
                   ok_exn
-                    (Gvecdb.create_vector db ~txn n "emb"
+                    (Gvecdb.create_vector db ~txn Node n "emb"
                        (floats_to_bigstring (random_vector dim)))
                 in
                 ());
@@ -566,7 +566,7 @@ let test_concurrent_writers () =
                 with_txn db (fun txn ->
                     let _ =
                       ok_exn
-                        (Gvecdb.create_vector db ~txn n "emb"
+                        (Gvecdb.create_vector db ~txn Node n "emb"
                            (floats_to_bigstring (random_vector 16)))
                     in
                     ());
@@ -600,7 +600,7 @@ let test_parallel_readonly () =
             let n = ok_exn (Gvecdb.create_node db ~txn "doc") in
             let _ =
               ok_exn
-                (Gvecdb.create_vector db ~txn n "emb"
+                (Gvecdb.create_vector db ~txn Node n "emb"
                    (floats_to_bigstring (random_vector dim)))
             in
             n))
@@ -627,7 +627,7 @@ let test_parallel_readonly () =
                 | 1 ->
                     let _ =
                       ok_exn
-                        (Gvecdb.get_outbound_edges db nodes.(Random.int 100))
+                        (Gvecdb.get_outbound_edges db nodes.(Random.int 100) ())
                     in
                     ()
                 | 2 ->
@@ -673,7 +673,7 @@ let test_hnsw_search_during_modifications () =
         let n = ok_exn (Gvecdb.create_node db ~txn "doc") in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "emb"
+            (Gvecdb.create_vector db ~txn Node n "emb"
                (floats_to_bigstring (random_vector dim)))
         in
         ()
@@ -721,7 +721,7 @@ let test_hnsw_search_during_modifications () =
               let v =
                 with_txn db (fun txn ->
                     ok_exn
-                      (Gvecdb.create_vector db ~txn n "emb"
+                      (Gvecdb.create_vector db ~txn Node n "emb"
                          (floats_to_bigstring (random_vector dim))))
               in
               created := v :: !created
@@ -788,7 +788,7 @@ let test_heavy_write_load () =
         let node = nodes.(Random.int n_nodes) in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "vec"
+            (Gvecdb.create_vector db ~txn Node node "vec"
                (floats_to_bigstring (random_vector dim)))
         in
         ()
@@ -815,7 +815,7 @@ let test_heavy_delete_load () =
         with_txn db (fun txn ->
             let _ =
               ok_exn
-                (Gvecdb.create_vector db ~txn n "vec"
+                (Gvecdb.create_vector db ~txn Node n "vec"
                    (floats_to_bigstring (random_vector dim)))
             in
             ());
@@ -854,7 +854,7 @@ let test_many_small_transactions () =
     with_txn db (fun txn ->
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "vec"
+            (Gvecdb.create_vector db ~txn Node n "vec"
                (floats_to_bigstring
                   (Array.init dim (fun j -> float_of_int ((i * 10) + j)))))
         in
@@ -880,7 +880,7 @@ let test_large_batch_transaction () =
         let n = ok_exn (Gvecdb.create_node db ~txn "item") in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "vec"
+            (Gvecdb.create_vector db ~txn Node n "vec"
                (floats_to_bigstring (random_vector dim)))
         in
         ()
@@ -905,7 +905,7 @@ let test_immediate_operations () =
   let v =
     with_txn db (fun txn ->
         ok_exn
-          (Gvecdb.create_vector db ~txn n "emb"
+          (Gvecdb.create_vector db ~txn Node n "emb"
              (floats_to_bigstring [| 1.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0; 0.0 |])))
   in
 
@@ -935,7 +935,7 @@ let test_empty_tag_searches () =
   with_txn db (fun txn ->
       let _ =
         ok_exn
-          (Gvecdb.create_vector db ~txn n "tag_a"
+          (Gvecdb.create_vector db ~txn Node n "tag_a"
              (floats_to_bigstring [| 1.0; 0.0 |]))
       in
       ());
@@ -961,17 +961,17 @@ let test_multiple_tags_per_node () =
     with_txn db (fun txn ->
         let a =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "title_emb"
+            (Gvecdb.create_vector db ~txn Node n "title_emb"
                (floats_to_bigstring vec_a))
         in
         let b =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "content_emb"
+            (Gvecdb.create_vector db ~txn Node n "content_emb"
                (floats_to_bigstring vec_b))
         in
         let c =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "summary_emb"
+            (Gvecdb.create_vector db ~txn Node n "summary_emb"
                (floats_to_bigstring vec_c))
         in
         (a, b, c))
@@ -1011,7 +1011,7 @@ let test_high_dimensional_vectors () =
         let n = ok_exn (Gvecdb.create_node db ~txn "doc") in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn n "emb"
+            (Gvecdb.create_vector db ~txn Node n "emb"
                (floats_to_bigstring (random_vector dim)))
         in
         ()

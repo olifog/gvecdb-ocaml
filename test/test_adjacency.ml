@@ -13,7 +13,7 @@ let test_outbound_edges () =
   let _ = ok_exn (Gvecdb.create_edge db "knows" a b) in
   let _ = ok_exn (Gvecdb.create_edge db "knows" a c) in
 
-  let outbound = ok_exn (Gvecdb.get_outbound_edges db a) in
+  let outbound = ok_exn (Gvecdb.get_outbound_edges db a ()) in
   check int "a has 2 outbound" 2 (List.length outbound);
 
   let dsts = List.map (fun e -> e.Gvecdb.dst) outbound in
@@ -28,7 +28,7 @@ let test_inbound_edges () =
   let _ = ok_exn (Gvecdb.create_edge db "knows" b a) in
   let _ = ok_exn (Gvecdb.create_edge db "knows" c a) in
 
-  let inbound = ok_exn (Gvecdb.get_inbound_edges db a) in
+  let inbound = ok_exn (Gvecdb.get_inbound_edges db a ()) in
   check int "a has 2 inbound" 2 (List.length inbound);
 
   let srcs = List.map (fun e -> e.Gvecdb.src) inbound in
@@ -38,13 +38,13 @@ let test_inbound_edges () =
 let test_no_outbound_edges () =
   with_temp_db "adj" @@ fun db ->
   let a = ok_exn (Gvecdb.create_node db "person") in
-  let outbound = ok_exn (Gvecdb.get_outbound_edges db a) in
+  let outbound = ok_exn (Gvecdb.get_outbound_edges db a ()) in
   check int "isolated node has no outbound" 0 (List.length outbound)
 
 let test_no_inbound_edges () =
   with_temp_db "adj" @@ fun db ->
   let a = ok_exn (Gvecdb.create_node db "person") in
-  let inbound = ok_exn (Gvecdb.get_inbound_edges db a) in
+  let inbound = ok_exn (Gvecdb.get_inbound_edges db a ()) in
   check int "isolated node has no inbound" 0 (List.length inbound)
 
 (** {1 Type-filtered adjacency tests} *)
@@ -58,9 +58,9 @@ let test_outbound_by_type () =
   let _ = ok_exn (Gvecdb.create_edge db "likes" a c) in
   let _ = ok_exn (Gvecdb.create_edge db "follows" a b) in
 
-  let knows = ok_exn (Gvecdb.get_outbound_edges_by_type db a "knows") in
-  let likes = ok_exn (Gvecdb.get_outbound_edges_by_type db a "likes") in
-  let follows = ok_exn (Gvecdb.get_outbound_edges_by_type db a "follows") in
+  let knows = ok_exn (Gvecdb.get_outbound_edges db a ~edge_type:"knows" ()) in
+  let likes = ok_exn (Gvecdb.get_outbound_edges db a ~edge_type:"likes" ()) in
+  let follows = ok_exn (Gvecdb.get_outbound_edges db a ~edge_type:"follows" ()) in
 
   check int "1 knows edge" 1 (List.length knows);
   check int "1 likes edge" 1 (List.length likes);
@@ -75,8 +75,8 @@ let test_inbound_by_type () =
   let _ = ok_exn (Gvecdb.create_edge db "likes" c a) in
   let _ = ok_exn (Gvecdb.create_edge db "knows" c a) in
 
-  let knows = ok_exn (Gvecdb.get_inbound_edges_by_type db a "knows") in
-  let likes = ok_exn (Gvecdb.get_inbound_edges_by_type db a "likes") in
+  let knows = ok_exn (Gvecdb.get_inbound_edges db a ~edge_type:"knows" ()) in
+  let likes = ok_exn (Gvecdb.get_inbound_edges db a ~edge_type:"likes" ()) in
 
   check int "2 knows edges" 2 (List.length knows);
   check int "1 likes edge" 1 (List.length likes)
@@ -87,7 +87,7 @@ let test_nonexistent_edge_type () =
   let b = ok_exn (Gvecdb.create_node db "person") in
   let _ = ok_exn (Gvecdb.create_edge db "knows" a b) in
 
-  let phantom = ok_exn (Gvecdb.get_outbound_edges_by_type db a "nonexistent") in
+  let phantom = ok_exn (Gvecdb.get_outbound_edges db a ~edge_type:"nonexistent" ()) in
   check int "no edges of nonexistent type" 0 (List.length phantom)
 
 (** {1 Edge info correctness} *)
@@ -98,7 +98,7 @@ let test_edge_info_in_query_results () =
   let b = ok_exn (Gvecdb.create_node db "person") in
   let edge = ok_exn (Gvecdb.create_edge db "knows" a b) in
 
-  let outbound = ok_exn (Gvecdb.get_outbound_edges db a) in
+  let outbound = ok_exn (Gvecdb.get_outbound_edges db a ()) in
   match outbound with
   | [ info ] ->
       check int64 "correct edge id" edge info.id;
@@ -114,8 +114,8 @@ let test_self_loop_adjacency () =
   let a = ok_exn (Gvecdb.create_node db "person") in
   let _ = ok_exn (Gvecdb.create_edge db "knows" a a) in
 
-  let outbound = ok_exn (Gvecdb.get_outbound_edges db a) in
-  let inbound = ok_exn (Gvecdb.get_inbound_edges db a) in
+  let outbound = ok_exn (Gvecdb.get_outbound_edges db a ()) in
+  let inbound = ok_exn (Gvecdb.get_inbound_edges db a ()) in
 
   check int "self-loop in outbound" 1 (List.length outbound);
   check int "self-loop in inbound" 1 (List.length inbound)
@@ -126,9 +126,9 @@ let test_multiple_self_loops () =
   let _ = ok_exn (Gvecdb.create_edge db "knows" a a) in
   let _ = ok_exn (Gvecdb.create_edge db "likes" a a) in
 
-  let all = ok_exn (Gvecdb.get_outbound_edges db a) in
-  let knows = ok_exn (Gvecdb.get_outbound_edges_by_type db a "knows") in
-  let likes = ok_exn (Gvecdb.get_outbound_edges_by_type db a "likes") in
+  let all = ok_exn (Gvecdb.get_outbound_edges db a ()) in
+  let knows = ok_exn (Gvecdb.get_outbound_edges db a ~edge_type:"knows" ()) in
+  let likes = ok_exn (Gvecdb.get_outbound_edges db a ~edge_type:"likes" ()) in
 
   check int "2 total self-loops" 2 (List.length all);
   check int "1 knows self-loop" 1 (List.length knows);
@@ -144,7 +144,7 @@ let test_parallel_edges_same_type () =
   let e2 = ok_exn (Gvecdb.create_edge db "knows" a b) in
   let e3 = ok_exn (Gvecdb.create_edge db "knows" a b) in
 
-  let outbound = ok_exn (Gvecdb.get_outbound_edges_by_type db a "knows") in
+  let outbound = ok_exn (Gvecdb.get_outbound_edges db a ~edge_type:"knows" ()) in
   check int "3 parallel edges" 3 (List.length outbound);
 
   let edge_ids = List.map (fun e -> e.Gvecdb.id) outbound in
@@ -159,10 +159,10 @@ let test_bidirectional_edges () =
   let _ = ok_exn (Gvecdb.create_edge db "knows" a b) in
   let _ = ok_exn (Gvecdb.create_edge db "knows" b a) in
 
-  let a_out = ok_exn (Gvecdb.get_outbound_edges db a) in
-  let a_in = ok_exn (Gvecdb.get_inbound_edges db a) in
-  let b_out = ok_exn (Gvecdb.get_outbound_edges db b) in
-  let b_in = ok_exn (Gvecdb.get_inbound_edges db b) in
+  let a_out = ok_exn (Gvecdb.get_outbound_edges db a ()) in
+  let a_in = ok_exn (Gvecdb.get_inbound_edges db a ()) in
+  let b_out = ok_exn (Gvecdb.get_outbound_edges db b ()) in
+  let b_in = ok_exn (Gvecdb.get_inbound_edges db b ()) in
 
   check int "a outbound" 1 (List.length a_out);
   check int "a inbound" 1 (List.length a_in);
@@ -179,11 +179,11 @@ let test_delete_edge_updates_adjacency () =
   let _e2 = ok_exn (Gvecdb.create_edge db "likes" a b) in
 
   check int "2 outbound before" 2
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db a)));
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db a ())));
 
   ok_exn (Gvecdb.delete_edge db e1);
 
-  let remaining = ok_exn (Gvecdb.get_outbound_edges db a) in
+  let remaining = ok_exn (Gvecdb.get_outbound_edges db a ()) in
   check int "1 outbound after" 1 (List.length remaining);
   check string "likes remains" "likes" (List.hd remaining).edge_type
 
@@ -197,7 +197,7 @@ let test_delete_middle_edge () =
 
   ok_exn (Gvecdb.delete_edge db e2);
 
-  let remaining = ok_exn (Gvecdb.get_outbound_edges db a) in
+  let remaining = ok_exn (Gvecdb.get_outbound_edges db a ()) in
   check int "2 edges remain" 2 (List.length remaining);
   let ids = List.map (fun e -> e.Gvecdb.id) remaining in
   check bool "e1 remains" true (List.mem e1 ids);
@@ -216,7 +216,7 @@ let test_many_outbound_edges () =
     (fun t -> ignore (ok_exn (Gvecdb.create_edge db "knows" a t)))
     targets;
 
-  let outbound = ok_exn (Gvecdb.get_outbound_edges db a) in
+  let outbound = ok_exn (Gvecdb.get_outbound_edges db a ()) in
   check int "100 outbound edges" 100 (List.length outbound)
 
 let test_many_inbound_edges () =
@@ -229,7 +229,7 @@ let test_many_inbound_edges () =
     (fun s -> ignore (ok_exn (Gvecdb.create_edge db "knows" s a)))
     sources;
 
-  let inbound = ok_exn (Gvecdb.get_inbound_edges db a) in
+  let inbound = ok_exn (Gvecdb.get_inbound_edges db a ()) in
   check int "100 inbound edges" 100 (List.length inbound)
 
 let test_hub_node () =
@@ -242,8 +242,8 @@ let test_hub_node () =
       ignore (ok_exn (Gvecdb.create_edge db "knows" n hub)))
     nodes;
 
-  let out = ok_exn (Gvecdb.get_outbound_edges db hub) in
-  let inb = ok_exn (Gvecdb.get_inbound_edges db hub) in
+  let out = ok_exn (Gvecdb.get_outbound_edges db hub ()) in
+  let inb = ok_exn (Gvecdb.get_inbound_edges db hub ()) in
 
   check int "50 outbound from hub" 50 (List.length out);
   check int "50 inbound to hub" 50 (List.length inb)
@@ -257,7 +257,7 @@ let test_adjacency_in_transaction () =
         let a = ok_exn (Gvecdb.create_node db ~txn "person") in
         let b = ok_exn (Gvecdb.create_node db ~txn "person") in
         let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" a b) in
-        ok_exn (Gvecdb.get_outbound_edges db ~txn a))
+        ok_exn (Gvecdb.get_outbound_edges db ~txn a ()))
   in
   match result with
   | Some edges -> check int "edge visible in txn" 1 (List.length edges)

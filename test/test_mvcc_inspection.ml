@@ -402,7 +402,7 @@ let test_populate_and_inspect () =
             let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
             let vec = random_vector dim in
             ok_exn
-              (Gvecdb.create_vector db ~txn node "embedding"
+              (Gvecdb.create_vector db ~txn Node node "embedding"
                  (floats_to_bigstring vec))))
   in
 
@@ -472,7 +472,7 @@ let test_delete_and_inspect () =
             let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
             let vec = random_vector dim in
             ok_exn
-              (Gvecdb.create_vector db ~txn node "embedding"
+              (Gvecdb.create_vector db ~txn Node node "embedding"
                  (floats_to_bigstring vec))))
   in
 
@@ -526,7 +526,7 @@ let test_persistence_and_inspect () =
         let vec = random_vector dim in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "embedding"
+            (Gvecdb.create_vector db ~txn Node node "embedding"
                (floats_to_bigstring vec))
         in
         ()
@@ -549,7 +549,7 @@ let test_persistence_and_inspect () =
         let vec = random_vector dim in
         let _ =
           ok_exn
-            (Gvecdb.create_vector db ~txn node "embedding"
+            (Gvecdb.create_vector db ~txn Node node "embedding"
                (floats_to_bigstring vec))
         in
         ()
@@ -590,7 +590,7 @@ let test_multi_epoch_inspection () =
           let vec = random_vector dim in
           let _ =
             ok_exn
-              (Gvecdb.create_vector db ~txn node "embedding"
+              (Gvecdb.create_vector db ~txn Node node "embedding"
                  (floats_to_bigstring vec))
           in
           ()
@@ -636,7 +636,7 @@ let test_large_scale_inspection () =
           let vec = random_vector dim in
           let _ =
             ok_exn
-              (Gvecdb.create_vector db ~txn node "embedding"
+              (Gvecdb.create_vector db ~txn Node node "embedding"
                  (floats_to_bigstring vec))
           in
           ()

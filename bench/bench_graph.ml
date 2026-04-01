@@ -70,7 +70,7 @@ let bench_adjacency_queries ~n_nodes ~n_edges ~n_queries ~seed =
   let outbound_lats = Array.init n_queries (fun i ->
     let node = nodes.(Random.State.int query_rng n_nodes) in
     let (_, lat) = time_us (fun () ->
-      ignore (ok_exn (Gvecdb.get_outbound_edges db node))) in
+      ignore (ok_exn (Gvecdb.get_outbound_edges db node ()))) in
     progress ~label:"outbound queries" ~i ~n:n_queries;
     lat
   ) in
@@ -82,7 +82,7 @@ let bench_adjacency_queries ~n_nodes ~n_edges ~n_queries ~seed =
   let inbound_lats = Array.init n_queries (fun i ->
     let node = nodes.(Random.State.int query_rng n_nodes) in
     let (_, lat) = time_us (fun () ->
-      ignore (ok_exn (Gvecdb.get_inbound_edges db node))) in
+      ignore (ok_exn (Gvecdb.get_inbound_edges db node ()))) in
     progress ~label:"inbound queries" ~i ~n:n_queries;
     lat
   ) in
@@ -95,7 +95,7 @@ let bench_adjacency_queries ~n_nodes ~n_edges ~n_queries ~seed =
     let node = nodes.(Random.State.int query_rng n_nodes) in
     let etype = edge_types.(Random.State.int query_rng (Array.length edge_types)) in
     let (_, lat) = time_us (fun () ->
-      ignore (ok_exn (Gvecdb.get_outbound_edges_by_type db node etype))) in
+      ignore (ok_exn (Gvecdb.get_outbound_edges db node ~edge_type:etype ()))) in
     progress ~label:"typed queries" ~i ~n:n_queries;
     lat
   ) in
@@ -120,7 +120,7 @@ let bench_cascade_deletion ~seed =
       for _ = 1 to vecs_per do
         with_txn db (fun txn ->
           let vec = random_vector_from rng dim in
-          ignore (ok_exn (Gvecdb.create_vector db ~txn node "v"
+          ignore (ok_exn (Gvecdb.create_vector db ~txn Node node "v"
             (floats_to_bigstring vec))))
       done;
       for _ = 1 to edges_per do

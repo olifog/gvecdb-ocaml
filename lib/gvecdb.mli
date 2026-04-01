@@ -13,12 +13,6 @@ type vector_id = id
 type vector_tag_id = intern_id
 type owner_kind = Node | Edge
 
-module Owner : sig
-  val encode : owner_kind -> id -> int64
-  val decode : int64 -> owner_kind * id
-  val kind_to_string : owner_kind -> string
-end
-
 type node_info = { id : node_id; node_type : string }
 
 type edge_info = {
@@ -109,99 +103,89 @@ val delete_edge :
 val get_edge_info :
   t -> ?txn:[> `Read ] txn -> edge_id -> (edge_info, error) result
 
+(** {1 schema registration} *)
+
+module Schema_registry = Schema_registry
+module Dynamic_reader = Dynamic_reader
+module Filter = Filter
+
+(** register a node/edge schema by compiling a .capnp file. extracts field
+    offsets from the capnp compiler's CodeGeneratorRequest output. *)
+val register_schema_from_capnp :
+  t ->
+  kind:Schema_registry.schema_kind ->
+  type_name:string ->
+  capnp_path:string ->
+  struct_name:string ->
+  ?txn:[> `Read | `Write ] txn ->
+  unit ->
+  (Schema_registry.registered_schema, error) result
+
+  (** register a schema with explicit field descriptors (no .capnp file needed) *)
+val register_schema_from_fields :
+  t ->
+  kind:Schema_registry.schema_kind ->
+  type_name:string ->
+  data_word_count:int ->
+  pointer_count:int ->
+  fields:Schema_registry.field_descriptor list ->
+  ?txn:[> `Read | `Write ] txn ->
+  unit ->
+  (Schema_registry.registered_schema, error) result
+
+val get_schema :
+  t -> ?txn:[> `Read ] txn -> string -> (Schema_registry.registered_schema, error) result
+
+  (** load all persisted schemas into the in-memory cache *)
+val load_all_schemas : t -> unit
+
 (** {1 adjacency queries} *)
 
 val get_outbound_edges :
-  t -> ?txn:[> `Read ] txn -> node_id -> (edge_info list, error) result
+  t -> ?txn:[> `Read ] txn -> node_id ->
+  ?edge_type:string -> ?filters:Filter.filter_predicate list ->
+  unit -> (edge_info list, error) result
 
 val get_inbound_edges :
-  t -> ?txn:[> `Read ] txn -> node_id -> (edge_info list, error) result
-
-val get_outbound_edges_by_type :
-  t ->
-  ?txn:[> `Read ] txn ->
-  node_id ->
-  string ->
-  (edge_info list, error) result
-
-val get_inbound_edges_by_type :
-  t ->
-  ?txn:[> `Read ] txn ->
-  node_id ->
-  string ->
-  (edge_info list, error) result
-
-(** {1 capnproto schemas} *)
-
-val register_node_schema_capnp :
-  t -> ?txn:[> `Read | `Write ] txn -> string -> int64 -> (unit, error) result
-
-val register_edge_schema_capnp :
-  t -> ?txn:[> `Read | `Write ] txn -> string -> int64 -> (unit, error) result
+  t -> ?txn:[> `Read ] txn -> node_id ->
+  ?edge_type:string -> ?filters:Filter.filter_predicate list ->
+  unit -> (edge_info list, error) result
 
 (** {1 node properties} *)
 
-val set_node_props_capnp :
-  t ->
-  ?txn:[> `Read | `Write ] txn ->
-  node_id ->
-  string ->
-  ('builder -> unit) ->
-  (unit -> 'builder) ->
-  ('builder -> 'a Capnp.BytesMessage.Message.t) ->
+(** set raw property bytes on an existing node. [string] is the type_name
+    used to update node_meta. *)
+val set_node_props :
+  t -> ?txn:[> `Read | `Write ] txn -> node_id -> string -> bigstring ->
   (unit, error) result
 
-val get_node_props_capnp :
-  t ->
-  ?txn:[> `Read ] txn ->
-  node_id ->
-  (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
-  ('reader -> 'result) ->
-  ('result, error) result
+val get_node_props :
+  t -> ?txn:[> `Read ] txn -> node_id -> (bigstring, error) result
 
 (** {1 edge properties} *)
 
-val set_edge_props_capnp :
-  t ->
-  ?txn:[> `Read | `Write ] txn ->
-  edge_id ->
-  string ->
-  ('builder -> unit) ->
-  (unit -> 'builder) ->
-  ('builder -> 'a Capnp.BytesMessage.Message.t) ->
+(** set raw property bytes on an existing edge. does not change edge type. *)
+val set_edge_props :
+  t -> ?txn:[> `Read | `Write ] txn -> edge_id -> bigstring ->
   (unit, error) result
 
-val get_edge_props_capnp :
-  t ->
-  ?txn:[> `Read ] txn ->
-  edge_id ->
-  (Capnp.Message.ro Bigstring_message.Message.t -> 'reader) ->
-  ('reader -> 'result) ->
-  ('result, error) result
+val get_edge_props :
+  t -> ?txn:[> `Read ] txn -> edge_id -> (bigstring, error) result
 
 (** {1 vectors} *)
 
-(** create vector on a node. [~normalize:true] (default) stores unit-length
-    vectors for fast cosine similarity with original magnitude preserved in
-    metadata. [~metric] sets the HNSW index metric when the index is first
-    created for this vector tag (default [Cosine]). ignored if an index
-    already exists for the tag. requires explicit transaction *)
+(** create vector on a node or edge. [~normalize:true] (default) stores
+    unit-length vectors for fast cosine similarity with original magnitude
+    preserved in metadata. [~metric] sets the HNSW index metric when the
+    index is first created for this vector tag (default [Cosine]). ignored
+    if an index already exists for the tag. requires explicit transaction *)
 val create_vector :
   t ->
   txn:[> `Read | `Write ] txn ->
   ?normalize:bool ->
   ?metric:distance_metric ->
-  node_id ->
-  string ->
-  bigstring ->
-  (vector_id, error) result
-
-val create_edge_vector :
-  t ->
-  txn:[> `Read | `Write ] txn ->
-  ?normalize:bool ->
-  ?metric:distance_metric ->
-  edge_id ->
+  owner_kind ->
+  id ->
   string ->
   bigstring ->
   (vector_id, error) result
@@ -220,18 +204,11 @@ val get_vector_info :
 val delete_vector :
   t -> txn:[> `Read | `Write ] txn -> vector_id -> (unit, error) result
 
-val get_vectors_for_node :
+val get_vectors :
   t ->
   ?txn:[> `Read ] txn ->
-  node_id ->
-  ?vector_tag:string ->
-  unit ->
-  (vector_info list, error) result
-
-val get_vectors_for_edge :
-  t ->
-  ?txn:[> `Read ] txn ->
-  edge_id ->
+  owner_kind ->
+  id ->
   ?vector_tag:string ->
   unit ->
   (vector_info list, error) result
@@ -255,14 +232,6 @@ val knn_brute_force :
   float array ->
   (knn_result list, error) result
 
-val knn_brute_force_bs :
-  t ->
-  ?txn:[> `Read ] txn ->
-  metric:distance_metric ->
-  k:int ->
-  bigstring ->
-  (knn_result list, error) result
-
 (** {1 HNSW-based k-NN search} *)
 
 (** HNSW approximate k-NN. ef controls search quality (higher = better recall).
@@ -277,19 +246,26 @@ val knn_hnsw :
   float array ->
   (knn_result list, error) result
 
-val knn_hnsw_bs :
-  t ->
-  ?txn:[> `Read ] txn ->
-  metric:distance_metric ->
-  k:int ->
-  ef:int ->
-  vector_tag:string ->
-  bigstring ->
-  (knn_result list, error) result
-
 (** rebuild HNSW index for a tag from scratch using all vectors with that tag *)
 val rebuild_hnsw_index :
   t -> ?txn:rw_txn -> vector_tag:string -> unit -> (unit, error) result
+
+(** {1 dynamic property access} *)
+
+val read_node_field :
+  t ->
+  ?txn:[> `Read ] txn ->
+  node_id ->
+  string ->
+  (Dynamic_reader.field_value, error) result
+(** read a single field from a node's properties by name *)
+
+val read_edge_field :
+  t ->
+  ?txn:[> `Read ] txn ->
+  edge_id ->
+  string ->
+  (Dynamic_reader.field_value, error) result
 
 (** {1 Internal modules (exposed for testing)} *)
 

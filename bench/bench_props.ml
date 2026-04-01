@@ -7,12 +7,39 @@
 open Bench_common
 
 module SchemaBuilder = Schemas.Make (Capnp.BytesMessage)
-module SchemaReader = Schemas.Make (Gvecdb.Bigstring_message)
+module SchemaReader = SchemaBuilder
 
 let default_n = 5000
 
+let find_capnp_path () =
+  let candidates = [
+    "test_schemas/schemas.capnp";
+    "../test_schemas/schemas.capnp";
+    "../../test_schemas/schemas.capnp";
+  ] in
+  match List.find_opt Sys.file_exists candidates with
+  | Some p -> p
+  | None -> failwith "cannot find test_schemas/schemas.capnp"
+
 let register_schemas db =
-  ok_exn (Gvecdb.register_node_schema_capnp db "person" 0xd8e6e025e7838111L)
+  let path = find_capnp_path () in
+  ignore (ok_exn (Gvecdb.register_schema_from_capnp db
+      ~kind:Gvecdb.Schema_registry.NodeSchemaKind
+      ~type_name:"person" ~capnp_path:path ~struct_name:"Person" ()))
+
+(** Serialize a capnp builder message to a bigstring (wire format) *)
+let capnp_to_bigstring to_message builder =
+  let msg = to_message builder in
+  let total = ref 0 in
+  Capnp.Codecs.serialize_iter msg ~compression:`None ~f:(fun fragment ->
+      total := !total + String.length fragment);
+  let bs = Bigstringaf.create !total in
+  let pos = ref 0 in
+  Capnp.Codecs.serialize_iter msg ~compression:`None ~f:(fun fragment ->
+      let len = String.length fragment in
+      Bigstringaf.blit_from_string fragment ~src_off:0 bs ~dst_off:!pos ~len;
+      pos := !pos + len);
+  bs
 
 (** Write N node properties with a given bio size *)
 let bench_write ~n ~bio_size =
@@ -23,14 +50,14 @@ let bench_write ~n ~bio_size =
   let latencies = Array.init n (fun i ->
     let node = ok_exn (Gvecdb.create_node db "person") in
     let ((), lat) = time_us (fun () ->
-      ok_exn (Gvecdb.set_node_props_capnp db node "person"
-        (fun b ->
-          SchemaBuilder.Builder.Person.name_set b "Alice Smith";
-          SchemaBuilder.Builder.Person.age_set_int_exn b 30;
-          SchemaBuilder.Builder.Person.email_set b "alice@example.com";
-          SchemaBuilder.Builder.Person.bio_set b bio)
-        SchemaBuilder.Builder.Person.init_root
-        SchemaBuilder.Builder.Person.to_message)) in
+      let builder = SchemaBuilder.Builder.Person.init_root () in
+      SchemaBuilder.Builder.Person.name_set builder "Alice Smith";
+      SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
+      SchemaBuilder.Builder.Person.email_set builder "alice@example.com";
+      SchemaBuilder.Builder.Person.bio_set builder bio;
+      let bs = capnp_to_bigstring
+          SchemaBuilder.Builder.Person.to_message builder in
+      ok_exn (Gvecdb.set_node_props db node "person" bs)) in
     progress ~label:"write props" ~i ~n;
     lat
   ) in
@@ -39,7 +66,7 @@ let bench_write ~n ~bio_size =
     stats.mean_us stats.p95_us stats.qps;
   stats
 
-(** Read only the integer age field — should NOT scale with bio size *)
+(** Read only the integer age field -- should NOT scale with bio size *)
 let bench_int_read ~n ~bio_size =
   Printf.printf "\n--- Zero-copy int read (n=%d bio_size=%d) ---\n%!" n bio_size;
   let bio = String.make bio_size 'x' in
@@ -47,14 +74,14 @@ let bench_int_read ~n ~bio_size =
   register_schemas db;
   let nodes = Array.init n (fun i ->
     let node = ok_exn (Gvecdb.create_node db "person") in
-    ok_exn (Gvecdb.set_node_props_capnp db node "person"
-      (fun b ->
-        SchemaBuilder.Builder.Person.name_set b "Alice Smith";
-        SchemaBuilder.Builder.Person.age_set_int_exn b 30;
-        SchemaBuilder.Builder.Person.email_set b "alice@example.com";
-        SchemaBuilder.Builder.Person.bio_set b bio)
-      SchemaBuilder.Builder.Person.init_root
-      SchemaBuilder.Builder.Person.to_message);
+    let builder = SchemaBuilder.Builder.Person.init_root () in
+    SchemaBuilder.Builder.Person.name_set builder "Alice Smith";
+    SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
+    SchemaBuilder.Builder.Person.email_set builder "alice@example.com";
+    SchemaBuilder.Builder.Person.bio_set builder bio;
+    let bs = capnp_to_bigstring
+        SchemaBuilder.Builder.Person.to_message builder in
+    ok_exn (Gvecdb.set_node_props db node "person" bs);
     progress ~label:"setup nodes" ~i ~n;
     node
   ) in
@@ -63,9 +90,15 @@ let bench_int_read ~n ~bio_size =
   let latencies = Array.init (n * 2) (fun i ->
     let node = nodes.(Random.State.int rng n) in
     let (_, lat) = time_us (fun () ->
-      ignore (ok_exn (Gvecdb.get_node_props_capnp db node
-        SchemaReader.Reader.Person.of_message
-        SchemaReader.Reader.Person.age_get))) in
+      let props_bs = ok_exn (Gvecdb.get_node_props db node) in
+      let s = Bigstringaf.to_string props_bs in
+      let stream = Capnp.Codecs.FramedStream.of_string ~compression:`None s in
+      match Capnp.Codecs.FramedStream.get_next_frame stream with
+      | Ok msg ->
+          let ro_msg = Capnp.BytesMessage.Message.readonly msg in
+          let reader = SchemaReader.Reader.Person.of_message ro_msg in
+          ignore (SchemaReader.Reader.Person.age_get reader)
+      | Error _ -> failwith "decode error") in
     progress ~label:"int read" ~i ~n:(n * 2);
     lat
   ) in
@@ -74,7 +107,7 @@ let bench_int_read ~n ~bio_size =
     stats.mean_us stats.p95_us stats.qps;
   stats
 
-(** Read all fields including text — latency should scale with bio size *)
+(** Read all fields including text -- latency should scale with bio size *)
 let bench_full_read ~n ~bio_size =
   Printf.printf "\n--- Full property read (n=%d bio_size=%d) ---\n%!" n bio_size;
   let bio = String.make bio_size 'x' in
@@ -82,14 +115,14 @@ let bench_full_read ~n ~bio_size =
   register_schemas db;
   let nodes = Array.init n (fun i ->
     let node = ok_exn (Gvecdb.create_node db "person") in
-    ok_exn (Gvecdb.set_node_props_capnp db node "person"
-      (fun b ->
-        SchemaBuilder.Builder.Person.name_set b "Alice Smith";
-        SchemaBuilder.Builder.Person.age_set_int_exn b 30;
-        SchemaBuilder.Builder.Person.email_set b "alice@example.com";
-        SchemaBuilder.Builder.Person.bio_set b bio)
-      SchemaBuilder.Builder.Person.init_root
-      SchemaBuilder.Builder.Person.to_message);
+    let builder = SchemaBuilder.Builder.Person.init_root () in
+    SchemaBuilder.Builder.Person.name_set builder "Alice Smith";
+    SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
+    SchemaBuilder.Builder.Person.email_set builder "alice@example.com";
+    SchemaBuilder.Builder.Person.bio_set builder bio;
+    let bs = capnp_to_bigstring
+        SchemaBuilder.Builder.Person.to_message builder in
+    ok_exn (Gvecdb.set_node_props db node "person" bs);
     progress ~label:"setup nodes" ~i ~n;
     node
   ) in
@@ -98,14 +131,19 @@ let bench_full_read ~n ~bio_size =
   let latencies = Array.init (n * 2) (fun i ->
     let node = nodes.(Random.State.int rng n) in
     let (_, lat) = time_us (fun () ->
-      ignore (ok_exn (Gvecdb.get_node_props_capnp db node
-        SchemaReader.Reader.Person.of_message
-        (fun reader ->
+      let props_bs = ok_exn (Gvecdb.get_node_props db node) in
+      let s = Bigstringaf.to_string props_bs in
+      let stream = Capnp.Codecs.FramedStream.of_string ~compression:`None s in
+      match Capnp.Codecs.FramedStream.get_next_frame stream with
+      | Ok msg ->
+          let ro_msg = Capnp.BytesMessage.Message.readonly msg in
+          let reader = SchemaReader.Reader.Person.of_message ro_msg in
           let _name = SchemaReader.Reader.Person.name_get reader in
           let _age = SchemaReader.Reader.Person.age_get reader in
           let _email = SchemaReader.Reader.Person.email_get reader in
           let _bio = SchemaReader.Reader.Person.bio_get reader in
-          ())))) in
+          ()
+      | Error _ -> failwith "decode error") in
     progress ~label:"full read" ~i ~n:(n * 2);
     lat
   ) in

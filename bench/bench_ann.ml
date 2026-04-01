@@ -29,7 +29,7 @@ let build_index ~vectors ~dim ~metric ~prefix =
     with_txn db (fun txn ->
       for j = !i to batch_end - 1 do
         let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
-        ignore (ok_exn (Gvecdb.create_vector db ~txn ~metric node "v"
+        ignore (ok_exn (Gvecdb.create_vector db ~txn ~metric Node node "v"
           (floats_to_bigstring vectors.(j))));
         progress ~label:(Printf.sprintf "insert %s %dd" (metric_to_string metric) dim)
           ~i:j ~n

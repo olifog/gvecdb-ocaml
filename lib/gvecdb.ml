@@ -7,8 +7,6 @@ type vector_id = Types.vector_id
 type vector_tag_id = Types.vector_tag_id
 type owner_kind = Types.owner_kind = Node | Edge
 
-module Owner = Types.Owner
-
 type node_info = Types.node_info = { id : node_id; node_type : string }
 
 type edge_info = Types.edge_info = {
@@ -241,27 +239,6 @@ let close t =
     t.hnsw_mvcc;
   Store.close t.db
 
-let register_node_schema_capnp t ?txn type_name schema_id =
-  Props_capnp.register_node_schema t.db ?txn type_name schema_id
-
-let register_edge_schema_capnp t ?txn type_name schema_id =
-  Props_capnp.register_edge_schema t.db ?txn type_name schema_id
-
-let set_node_props_capnp t ?txn node_id type_name build_fn init_root to_message
-    =
-  Props_capnp.set_node_props_capnp t.db ?txn node_id type_name build_fn
-    init_root to_message
-
-let get_node_props_capnp t ?txn node_id of_message read_fn =
-  Props_capnp.get_node_props_capnp t.db ?txn node_id of_message read_fn
-
-let set_edge_props_capnp t ?txn edge_id type_name build_fn init_root to_message
-    =
-  Props_capnp.set_edge_props_capnp t.db ?txn edge_id type_name build_fn
-    init_root to_message
-
-let get_edge_props_capnp t ?txn edge_id of_message read_fn =
-  Props_capnp.get_edge_props_capnp t.db ?txn edge_id of_message read_fn
 
 let get_edge_info (t : t) ?txn (edge_id : edge_id) : (edge_info, error) result =
   let* intern_id, src, dst = Props_capnp.get_edge_meta t.db ?txn edge_id in
@@ -387,33 +364,72 @@ let scan_adjacency_index (t : t) ?txn ~direction ~node_id
       Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code))
   | Invalid_argument msg -> Error (Corrupted_data msg)
 
-let get_outbound_edges (t : t) ?txn (node_id : node_id) :
+let filter_edges_with_predicates (t : t) ?txn
+    (edges : edge_info list) (filters : Filter.filter_predicate list) :
     (edge_info list, error) result =
-  let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
-  scan_adjacency_index t ?txn ~direction:Outbound ~node_id t.db.outbound prefix
+  if filters = [] then Ok edges
+  else
+    let pf_cache = Hashtbl.create 8 in
+    let get_prepared et =
+      match Hashtbl.find_opt pf_cache et with
+      | Some cached -> cached
+      | None ->
+          let result =
+            match Schema_registry.get_schema t.db ?txn et with
+            | Ok schema ->
+                (match Filter.prepare_filter schema filters with
+                 | Ok pf -> Some pf
+                 | Error _ -> None)
+            | Error _ -> None
+          in
+          Hashtbl.replace pf_cache et result;
+          result
+    in
+    Ok (List.filter (fun (ei : edge_info) ->
+      match get_prepared ei.edge_type with
+      | None -> false
+      | Some pf ->
+          let key = Keys.encode_id_bs ei.id in
+          (try
+             let props_bs = Lmdb.Map.get t.db.edges ?txn key in
+             if Bigstring.length props_bs = 0 then false
+             else Filter.matches_blob props_bs pf
+           with Not_found | Lmdb.Not_found -> false))
+      edges)
 
-let get_inbound_edges (t : t) ?txn (node_id : node_id) :
+let get_adjacency_edges_internal (t : t) ?txn ~direction ~node_id
+    (map : (bigstring, bigstring, [ `Uni ]) Lmdb.Map.t) ?edge_type () :
     (edge_info list, error) result =
-  let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
-  scan_adjacency_index t ?txn ~direction:Inbound ~node_id t.db.inbound prefix
+  match edge_type with
+  | Some et -> (
+      match Store.lookup_intern t.db ?txn et with
+      | None -> Ok []
+      | Some intern_id ->
+          let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
+          scan_adjacency_index t ?txn ~direction ~node_id map prefix)
+  | None ->
+      let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
+      scan_adjacency_index t ?txn ~direction ~node_id map prefix
 
-let get_outbound_edges_by_type (t : t) ?txn (node_id : node_id)
-    (edge_type : string) : (edge_info list, error) result =
-  match Store.lookup_intern t.db ?txn edge_type with
-  | None -> Ok [] (* type not interned means no edges of this type exist *)
-  | Some intern_id ->
-      let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
-      scan_adjacency_index t ?txn ~direction:Outbound ~node_id t.db.outbound
-        prefix
+let get_outbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters ()
+    : (edge_info list, error) result =
+  let* edges =
+    get_adjacency_edges_internal t ?txn ~direction:Outbound ~node_id
+      t.db.outbound ?edge_type ()
+  in
+  match filters with
+  | Some f when f <> [] -> filter_edges_with_predicates t ?txn edges f
+  | _ -> Ok edges
 
-let get_inbound_edges_by_type (t : t) ?txn (node_id : node_id)
-    (edge_type : string) : (edge_info list, error) result =
-  match Store.lookup_intern t.db ?txn edge_type with
-  | None -> Ok [] (* type not interned means no edges of this type exist *)
-  | Some intern_id ->
-      let prefix = Keys.encode_adjacency_prefix_bs ~node_id ~intern_id () in
-      scan_adjacency_index t ?txn ~direction:Inbound ~node_id t.db.inbound
-        prefix
+let get_inbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters ()
+    : (edge_info list, error) result =
+  let* edges =
+    get_adjacency_edges_internal t ?txn ~direction:Inbound ~node_id
+      t.db.inbound ?edge_type ()
+  in
+  match filters with
+  | Some f when f <> [] -> filter_edges_with_predicates t ?txn edges f
+  | _ -> Ok edges
 
 external dist_from_mmap :
   Common.bigstring ->
@@ -556,22 +572,20 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric
                               vector_id))))))
 
 let create_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
-    (node_id : node_id) (vector_tag : string) (data : bigstring) :
-    (vector_id, error) result =
-  let* exists = node_exists t ~txn node_id in
-  if not exists then Error (Node_not_found node_id)
+    (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
+    (data : bigstring) : (vector_id, error) result =
+  let* exists =
+    match owner_kind with
+    | Node -> node_exists t ~txn owner_id
+    | Edge -> edge_exists t ~txn owner_id
+  in
+  if not exists then
+    match owner_kind with
+    | Node -> Error (Node_not_found owner_id)
+    | Edge -> Error (Edge_not_found owner_id)
   else
-    create_vector_internal t ~txn ~normalize ~metric Node node_id vector_tag
-      data
-
-let create_edge_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
-    (edge_id : edge_id) (vector_tag : string) (data : bigstring) :
-    (vector_id, error) result =
-  let* exists = edge_exists t ~txn edge_id in
-  if not exists then Error (Edge_not_found edge_id)
-  else
-    create_vector_internal t ~txn ~normalize ~metric Edge edge_id vector_tag
-      data
+    create_vector_internal t ~txn ~normalize ~metric owner_kind owner_id
+      vector_tag data
 
 let vector_exists (t : t) ?txn (vector_id : vector_id) : (bool, error) result =
   try
@@ -744,7 +758,7 @@ let delete_node (t : t) ?txn (node_id : node_id) : (unit, error) result =
       (* 1. delete all vectors directly attached to this node *)
       let* () = delete_vectors_for_owner t ?txn Node node_id in
       (* 2. get all outbound edges and delete them (with their vectors) *)
-      let* outbound_edges = get_outbound_edges t ?txn node_id in
+      let* outbound_edges = get_outbound_edges t ?txn node_id () in
       let rec delete_edges = function
         | [] -> Ok ()
         | edge :: rest ->
@@ -754,7 +768,7 @@ let delete_node (t : t) ?txn (node_id : node_id) : (unit, error) result =
       in
       let* () = delete_edges outbound_edges in
       (* 3. get all inbound edges and delete them (with their vectors) *)
-      let* inbound_edges = get_inbound_edges t ?txn node_id in
+      let* inbound_edges = get_inbound_edges t ?txn node_id () in
       let* () = delete_edges inbound_edges in
       (* 4. delete the node itself *)
       Lmdb.Map.remove t.db.nodes ?txn key;
@@ -808,19 +822,12 @@ let get_vectors_for_owner_internal (t : t) ?txn (owner_kind : owner_kind)
       | Lmdb.Error code ->
           Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code)))
 
-let get_vectors_for_node (t : t) ?txn (node_id : node_id) ?vector_tag () :
-    (vector_info list, error) result =
-  get_vectors_for_owner_internal t ?txn Node node_id ?vector_tag ()
-
-let get_vectors_for_edge (t : t) ?txn (edge_id : edge_id) ?vector_tag () :
-    (vector_info list, error) result =
-  get_vectors_for_owner_internal t ?txn Edge edge_id ?vector_tag ()
+let get_vectors (t : t) ?txn (owner_kind : owner_kind) (owner_id : id)
+    ?vector_tag () : (vector_info list, error) result =
+  get_vectors_for_owner_internal t ?txn owner_kind owner_id ?vector_tag ()
 
 let knn_brute_force t ?txn ~metric ~k query =
   Knn.brute_force t.db ?txn ~metric ~k query
-
-let knn_brute_force_bs t ?txn ~metric ~k query =
-  Knn.brute_force_bs t.db ?txn ~metric ~k query
 
 let metric_to_string = function
   | Types.Euclidean -> "euclidean"
@@ -891,9 +898,6 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
                 Ok results_with_info
               end
             end)
-
-let knn_hnsw_bs t ?txn ~metric ~k ~ef ~vector_tag query =
-  knn_hnsw t ?txn ~metric ~k ~ef ~vector_tag (Float32_vec.to_array query)
 
 let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
   let tag_id_opt = Store.lookup_intern t.db ?txn vector_tag in
@@ -1037,6 +1041,97 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
                   Ok ())
         end
       end
+
+module Schema_registry = Schema_registry
+module Dynamic_reader = Dynamic_reader
+module Filter = Filter
+
+let register_schema_from_capnp t ~kind ~type_name ~capnp_path ~struct_name
+    ?txn () =
+  Schema_registry.register_schema_from_capnp t.db ~kind ~type_name ~capnp_path
+    ~struct_name ?txn ()
+
+let register_schema_from_fields t ~kind ~type_name ~data_word_count
+    ~pointer_count ~fields ?txn () =
+  Schema_registry.register_schema_from_fields t.db ~kind ~type_name
+    ~data_word_count ~pointer_count ~fields ?txn ()
+
+let get_schema t ?txn type_name =
+  Schema_registry.get_schema t.db ?txn type_name
+
+let load_all_schemas t =
+  Schema_registry.load_all_schemas t.db
+
+let lmdb_get_or_corrupted map ?txn key msg =
+  try Ok (Lmdb.Map.get map ?txn key)
+  with Not_found | Lmdb.Not_found -> Error (Corrupted_data msg)
+
+let read_node_field t ?txn node_id field_name =
+  let key = Keys.encode_id_bs node_id in
+  let* exists = node_exists t ?txn node_id in
+  if not exists then Error (Node_not_found node_id)
+  else
+  let* meta_bs = lmdb_get_or_corrupted t.db.node_meta ?txn key
+      "node_meta missing for existing node" in
+  let intern_id = Keys.decode_id_bs meta_bs in
+  let* type_name =
+    try Ok (Store.unintern t.db ?txn intern_id)
+    with Not_found | Lmdb.Not_found ->
+      Error (Corrupted_data "intern reverse lookup failed")
+  in
+  let* schema = get_schema t ?txn type_name in
+  let* props_bs = lmdb_get_or_corrupted t.db.nodes ?txn key
+      "node props missing for existing node" in
+  Dynamic_reader.read_field_by_name props_bs schema field_name
+
+let read_edge_field t ?txn edge_id field_name =
+  let key = Keys.encode_id_bs edge_id in
+  let* exists = edge_exists t ?txn edge_id in
+  if not exists then Error (Edge_not_found edge_id)
+  else
+  let* props_bs = lmdb_get_or_corrupted t.db.edges ?txn key
+      "edge props missing for existing edge" in
+  let* meta_bs = lmdb_get_or_corrupted t.db.edge_meta ?txn key
+      "edge_meta missing for existing edge" in
+  let intern_id, _, _ = Keys.decode_edge_meta meta_bs in
+  let* type_name =
+    try Ok (Store.unintern t.db ?txn intern_id)
+    with Not_found | Lmdb.Not_found ->
+      Error (Corrupted_data "intern reverse lookup failed")
+  in
+  let* schema = get_schema t ?txn type_name in
+  Dynamic_reader.read_field_by_name props_bs schema field_name
+
+let get_node_props (t : t) ?txn (node_id : node_id) :
+    (bigstring, error) result =
+  let key = Keys.encode_id_bs node_id in
+  try Ok (Lmdb.Map.get t.db.nodes ?txn key)
+  with Not_found | Lmdb.Not_found -> Error (Node_not_found node_id)
+
+let get_edge_props (t : t) ?txn (edge_id : edge_id) :
+    (bigstring, error) result =
+  let key = Keys.encode_id_bs edge_id in
+  try Ok (Lmdb.Map.get t.db.edges ?txn key)
+  with Not_found | Lmdb.Not_found -> Error (Edge_not_found edge_id)
+
+let set_node_props (t : t) ?txn (node_id : node_id) (type_name : string)
+    (data : bigstring) : (unit, error) result =
+  let* exists = node_exists t ?txn node_id in
+  if not exists then Error (Node_not_found node_id)
+  else
+  let* intern_id = Store.intern t.db ?txn type_name in
+  Types.wrap_lmdb_exn (fun () ->
+      let key = Keys.encode_id_bs node_id in
+      Lmdb.Map.set t.db.node_meta ?txn key (Keys.encode_id_bs intern_id);
+      Lmdb.Map.set t.db.nodes ?txn key data)
+
+let set_edge_props (t : t) ?txn (edge_id : edge_id) (data : bigstring) :
+    (unit, error) result =
+  let key = Keys.encode_id_bs edge_id in
+  let* exists = edge_exists t ?txn edge_id in
+  if not exists then Error (Edge_not_found edge_id)
+  else
+  Types.wrap_lmdb_exn (fun () -> Lmdb.Map.set t.db.edges ?txn key data)
 
 module Types = Types
 module Hnsw_page = Hnsw_page

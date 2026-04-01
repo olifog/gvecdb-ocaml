@@ -1,12 +1,45 @@
 (** example client demonstrating gvecdb usage with CapnProto schemas *)
 
-(* BytesMessage for building, Bigstring_message for reading *)
+(* BytesMessage for both building and reading *)
 module SchemaBuilder = Schemas.Make (Capnp.BytesMessage)
-module SchemaReader = Schemas.Make (Gvecdb.Bigstring_message)
+module SchemaReader = SchemaBuilder
 
 let ok_exn = function
   | Ok x -> x
   | Error e -> failwith (Gvecdb.Error.to_string e)
+
+(** Serialize a capnp builder message to a bigstring (wire format) *)
+let capnp_to_bigstring to_message builder =
+  let msg = to_message builder in
+  let total = ref 0 in
+  Capnp.Codecs.serialize_iter msg ~compression:`None ~f:(fun fragment ->
+      total := !total + String.length fragment);
+  let bs = Bigstringaf.create !total in
+  let pos = ref 0 in
+  Capnp.Codecs.serialize_iter msg ~compression:`None ~f:(fun fragment ->
+      let len = String.length fragment in
+      Bigstringaf.blit_from_string fragment ~src_off:0 bs ~dst_off:!pos ~len;
+      pos := !pos + len);
+  bs
+
+(** Read capnp wire-format props from a bigstring *)
+let decode_and_read bs of_message read_fn =
+  let s = Bigstringaf.to_string bs in
+  let stream = Capnp.Codecs.FramedStream.of_string ~compression:`None s in
+  match Capnp.Codecs.FramedStream.get_next_frame stream with
+  | Ok msg ->
+      let ro_msg = Capnp.BytesMessage.Message.readonly msg in
+      let reader = of_message ro_msg in
+      read_fn reader
+  | Error _ -> failwith "failed to decode capnp wire format"
+
+let read_node_props db node of_message read_fn =
+  let bs = ok_exn (Gvecdb.get_node_props db node) in
+  decode_and_read bs of_message read_fn
+
+let read_edge_props db edge of_message read_fn =
+  let bs = ok_exn (Gvecdb.get_edge_props db edge) in
+  decode_and_read bs of_message read_fn
 
 let () =
   print_endline "=== gvecdb example client ===";
@@ -37,7 +70,7 @@ let () =
   print_endline "";
 
   print_endline "testing adjacency queries";
-  let alice_outbound = ok_exn (Gvecdb.get_outbound_edges db alice) in
+  let alice_outbound = ok_exn (Gvecdb.get_outbound_edges db alice ()) in
   Printf.printf "  alice outbound edges (%d):\n" (List.length alice_outbound);
   List.iter
     (fun edge ->
@@ -46,45 +79,35 @@ let () =
     alice_outbound;
   print_endline "";
 
-  print_endline "registering schemas";
-  ok_exn (Gvecdb.register_node_schema_capnp db "person" 0xd8e6e025e7838111L);
-  ok_exn (Gvecdb.register_edge_schema_capnp db "knows" 0xd3c22e2de1d0b32bL);
-  print_endline "schemas registered";
-  print_endline "";
-
   print_endline "setting alice's properties";
-  ok_exn
-    (Gvecdb.set_node_props_capnp db alice "person"
-       (fun builder ->
-         SchemaBuilder.Builder.Person.name_set builder "Alice Smith";
-         SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
-         SchemaBuilder.Builder.Person.email_set builder "alice@example.com";
-         SchemaBuilder.Builder.Person.bio_set builder "Software engineer")
-       SchemaBuilder.Builder.Person.init_root
-       SchemaBuilder.Builder.Person.to_message);
+  let builder = SchemaBuilder.Builder.Person.init_root () in
+  SchemaBuilder.Builder.Person.name_set builder "Alice Smith";
+  SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
+  SchemaBuilder.Builder.Person.email_set builder "alice@example.com";
+  SchemaBuilder.Builder.Person.bio_set builder "Software engineer";
+  let bs = capnp_to_bigstring SchemaBuilder.Builder.Person.to_message builder in
+  ok_exn (Gvecdb.set_node_props db alice "person" bs);
   print_endline "properties set";
   print_endline "";
 
   print_endline "reading alice's name";
   let alice_name =
-    ok_exn
-      (Gvecdb.get_node_props_capnp db alice
-         SchemaReader.Reader.Person.of_message
-         SchemaReader.Reader.Person.name_get)
+    read_node_props db alice
+      SchemaReader.Reader.Person.of_message
+      SchemaReader.Reader.Person.name_get
   in
   Printf.printf "  name: %s\n" alice_name;
   print_endline "";
 
   print_endline "reading alice's full properties";
   let alice_name, alice_age, alice_email, alice_bio =
-    ok_exn
-      (Gvecdb.get_node_props_capnp db alice
-         SchemaReader.Reader.Person.of_message (fun reader ->
-           let name = SchemaReader.Reader.Person.name_get reader in
-           let age = SchemaReader.Reader.Person.age_get_int_exn reader in
-           let email = SchemaReader.Reader.Person.email_get reader in
-           let bio = SchemaReader.Reader.Person.bio_get reader in
-           (name, age, email, bio)))
+    read_node_props db alice
+      SchemaReader.Reader.Person.of_message (fun reader ->
+        let name = SchemaReader.Reader.Person.name_get reader in
+        let age = SchemaReader.Reader.Person.age_get_int_exn reader in
+        let email = SchemaReader.Reader.Person.email_get reader in
+        let bio = SchemaReader.Reader.Person.bio_get reader in
+        (name, age, email, bio))
   in
   Printf.printf "  name: %s\n" alice_name;
   Printf.printf "  age: %d\n" alice_age;
@@ -93,27 +116,25 @@ let () =
   print_endline "";
 
   print_endline "setting edge properties";
-  ok_exn
-    (Gvecdb.set_edge_props_capnp db edge1 "knows"
-       (fun builder ->
-         SchemaBuilder.Builder.Knows.since_set builder 1609459200L;
-         SchemaBuilder.Builder.Knows.strength_set builder 0.85;
-         SchemaBuilder.Builder.Knows.context_set builder "Met at university";
-         SchemaBuilder.Builder.Knows.last_contact_set builder 1700000000L)
-       SchemaBuilder.Builder.Knows.init_root
-       SchemaBuilder.Builder.Knows.to_message);
+  let edge_builder = SchemaBuilder.Builder.Knows.init_root () in
+  SchemaBuilder.Builder.Knows.since_set edge_builder 1609459200L;
+  SchemaBuilder.Builder.Knows.strength_set edge_builder 0.85;
+  SchemaBuilder.Builder.Knows.context_set edge_builder "Met at university";
+  SchemaBuilder.Builder.Knows.last_contact_set edge_builder 1700000000L;
+  let edge_bs = capnp_to_bigstring
+      SchemaBuilder.Builder.Knows.to_message edge_builder in
+  ok_exn (Gvecdb.set_edge_props db edge1 edge_bs);
   print_endline "edge properties set";
   print_endline "";
 
   print_endline "reading edge properties";
   let since, strength, context =
-    ok_exn
-      (Gvecdb.get_edge_props_capnp db edge1 SchemaReader.Reader.Knows.of_message
-         (fun reader ->
-           let since = SchemaReader.Reader.Knows.since_get reader in
-           let strength = SchemaReader.Reader.Knows.strength_get reader in
-           let context = SchemaReader.Reader.Knows.context_get reader in
-           (since, strength, context)))
+    read_edge_props db edge1 SchemaReader.Reader.Knows.of_message
+      (fun reader ->
+        let since = SchemaReader.Reader.Knows.since_get reader in
+        let strength = SchemaReader.Reader.Knows.strength_get reader in
+        let context = SchemaReader.Reader.Knows.context_get reader in
+        (since, strength, context))
   in
   Printf.printf "  since: %Ld\n" since;
   Printf.printf "  strength: %.2f\n" strength;
@@ -131,7 +152,7 @@ let () =
   (* delete an edge *)
   print_endline "  deleting edge: alice --[likes]--> charlie";
   ok_exn (Gvecdb.delete_edge db edge3);
-  let alice_outbound_after = ok_exn (Gvecdb.get_outbound_edges db alice) in
+  let alice_outbound_after = ok_exn (Gvecdb.get_outbound_edges db alice ()) in
   Printf.printf "  alice now has %d outbound edges (down from 2)\n"
     (List.length alice_outbound_after);
 
@@ -157,13 +178,12 @@ let () =
         let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" eve frank) in
         let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" dave frank) in
 
-        ok_exn
-          (Gvecdb.set_node_props_capnp db ~txn dave "person"
-             (fun builder ->
-               SchemaBuilder.Builder.Person.name_set builder "Dave";
-               SchemaBuilder.Builder.Person.age_set_int_exn builder 25)
-             SchemaBuilder.Builder.Person.init_root
-             SchemaBuilder.Builder.Person.to_message);
+        let builder = SchemaBuilder.Builder.Person.init_root () in
+        SchemaBuilder.Builder.Person.name_set builder "Dave";
+        SchemaBuilder.Builder.Person.age_set_int_exn builder 25;
+        let bs = capnp_to_bigstring
+            SchemaBuilder.Builder.Person.to_message builder in
+        ok_exn (Gvecdb.set_node_props db ~txn dave "person" bs);
 
         (dave, eve, frank))
   in
@@ -172,7 +192,7 @@ let () =
       Printf.printf "  transaction committed! created nodes: %Ld, %Ld, %Ld\n"
         dave eve frank;
       Printf.printf "  dave's outbound edges: %d\n"
-        (List.length (ok_exn (Gvecdb.get_outbound_edges db dave)))
+        (List.length (ok_exn (Gvecdb.get_outbound_edges db dave ())))
   | None -> print_endline "  transaction aborted!");
   print_endline "";
 

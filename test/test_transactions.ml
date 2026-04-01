@@ -75,9 +75,9 @@ let test_edge_creation_rollback () =
      ()
    with Failure _ -> ());
   check int "no outbound edges after rollback" 0
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db a)));
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db a ())));
   check int "no inbound edges after rollback" 0
-    (List.length (ok_exn (Gvecdb.get_inbound_edges db b)))
+    (List.length (ok_exn (Gvecdb.get_inbound_edges db b ())))
 
 let test_multiple_edges_rollback () =
   with_temp_db "txn" @@ fun db ->
@@ -98,7 +98,7 @@ let test_multiple_edges_rollback () =
      ()
    with Failure _ -> ());
   check int "no outbound edges after rollback" 0
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db a)))
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db a ())))
 
 let test_edge_deletion_rollback () =
   with_temp_db "txn" @@ fun db ->
@@ -117,7 +117,7 @@ let test_edge_deletion_rollback () =
   check bool "edge still exists after rollback" true
     (ok_exn (Gvecdb.edge_exists db edge));
   check int "outbound edge still exists" 1
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db a)))
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db a ())))
 
 (** {1 Node deletion rollback tests} *)
 
@@ -160,15 +160,14 @@ let test_props_creation_rollback () =
   (try
      let _ =
        Gvecdb.with_transaction db (fun txn ->
-           ok_exn
-             (Gvecdb.set_node_props_capnp db ~txn node "person"
-                (fun b ->
-                  SchemaBuilder.Builder.Person.name_set b "Alice";
-                  SchemaBuilder.Builder.Person.age_set_int_exn b 30;
-                  SchemaBuilder.Builder.Person.email_set b "alice@test.com";
-                  SchemaBuilder.Builder.Person.bio_set b "bio")
-                SchemaBuilder.Builder.Person.init_root
-                SchemaBuilder.Builder.Person.to_message);
+           let builder = SchemaBuilder.Builder.Person.init_root () in
+           SchemaBuilder.Builder.Person.name_set builder "Alice";
+           SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
+           SchemaBuilder.Builder.Person.email_set builder "alice@test.com";
+           SchemaBuilder.Builder.Person.bio_set builder "bio";
+           let bs = capnp_to_bigstring
+               SchemaBuilder.Builder.Person.to_message builder in
+           ok_exn (Gvecdb.set_node_props db ~txn node "person" bs);
            failwith "abort")
      in
      ()
@@ -183,15 +182,14 @@ let test_props_update_rollback () =
   (try
      let _ =
        Gvecdb.with_transaction db (fun txn ->
-           ok_exn
-             (Gvecdb.set_node_props_capnp db ~txn node "person"
-                (fun b ->
-                  SchemaBuilder.Builder.Person.name_set b "Bob";
-                  SchemaBuilder.Builder.Person.age_set_int_exn b 99;
-                  SchemaBuilder.Builder.Person.email_set b "bob@test.com";
-                  SchemaBuilder.Builder.Person.bio_set b "new bio")
-                SchemaBuilder.Builder.Person.init_root
-                SchemaBuilder.Builder.Person.to_message);
+           let builder = SchemaBuilder.Builder.Person.init_root () in
+           SchemaBuilder.Builder.Person.name_set builder "Bob";
+           SchemaBuilder.Builder.Person.age_set_int_exn builder 99;
+           SchemaBuilder.Builder.Person.email_set builder "bob@test.com";
+           SchemaBuilder.Builder.Person.bio_set builder "new bio";
+           let bs = capnp_to_bigstring
+               SchemaBuilder.Builder.Person.to_message builder in
+           ok_exn (Gvecdb.set_node_props db ~txn node "person" bs);
            failwith "abort")
      in
      ()
@@ -209,22 +207,20 @@ let test_edge_props_rollback () =
   (try
      let _ =
        Gvecdb.with_transaction db (fun txn ->
-           ok_exn
-             (Gvecdb.set_edge_props_capnp db ~txn edge "knows"
-                (fun builder ->
-                  SchemaBuilder.Builder.Knows.since_set builder 2024L;
-                  SchemaBuilder.Builder.Knows.context_set builder "changed";
-                  SchemaBuilder.Builder.Knows.strength_set builder 1.0)
-                SchemaBuilder.Builder.Knows.init_root
-                SchemaBuilder.Builder.Knows.to_message);
+           let builder = SchemaBuilder.Builder.Knows.init_root () in
+           SchemaBuilder.Builder.Knows.since_set builder 2024L;
+           SchemaBuilder.Builder.Knows.context_set builder "changed";
+           SchemaBuilder.Builder.Knows.strength_set builder 1.0;
+           let bs = capnp_to_bigstring
+               SchemaBuilder.Builder.Knows.to_message builder in
+           ok_exn (Gvecdb.set_edge_props db ~txn edge bs);
            failwith "abort")
      in
      ()
    with Failure _ -> ());
   let since =
-    ok_exn
-      (Gvecdb.get_edge_props_capnp db edge SchemaReader.Reader.Knows.of_message
-         SchemaReader.Reader.Knows.since_get)
+    read_edge_props_capnp db edge SchemaReader.Reader.Knows.of_message
+      SchemaReader.Reader.Knows.since_get
   in
   check Alcotest.int64 "edge props unchanged after rollback" 2020L since
 
@@ -242,24 +238,23 @@ let test_complex_graph_rollback () =
            let charlie = ok_exn (Gvecdb.create_node db ~txn "person") in
            let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" bob charlie) in
            let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" alice charlie) in
-           ok_exn
-             (Gvecdb.set_node_props_capnp db ~txn alice "person"
-                (fun b ->
-                  SchemaBuilder.Builder.Person.name_set b "Alice Modified";
-                  SchemaBuilder.Builder.Person.age_set_int_exn b 31;
-                  SchemaBuilder.Builder.Person.email_set b "alice2@test.com";
-                  SchemaBuilder.Builder.Person.bio_set b "new bio")
-                SchemaBuilder.Builder.Person.init_root
-                SchemaBuilder.Builder.Person.to_message);
+           let builder = SchemaBuilder.Builder.Person.init_root () in
+           SchemaBuilder.Builder.Person.name_set builder "Alice Modified";
+           SchemaBuilder.Builder.Person.age_set_int_exn builder 31;
+           SchemaBuilder.Builder.Person.email_set builder "alice2@test.com";
+           SchemaBuilder.Builder.Person.bio_set builder "new bio";
+           let bs = capnp_to_bigstring
+               SchemaBuilder.Builder.Person.to_message builder in
+           ok_exn (Gvecdb.set_node_props db ~txn alice "person" bs);
            failwith "abort")
      in
      ()
    with Failure _ -> ());
   check string "alice name unchanged" "Alice" (get_person_name db alice);
   check int "alice has 1 outbound" 1
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice)));
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice ())));
   check int "bob has 0 outbound" 0
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db bob)))
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db bob ())))
 
 let test_partial_operations_rollback () =
   with_temp_db "txn" @@ fun db ->
@@ -306,7 +301,7 @@ let test_edge_created_in_txn_visible () =
         let a = ok_exn (Gvecdb.create_node db ~txn "person") in
         let b = ok_exn (Gvecdb.create_node db ~txn "person") in
         let e = ok_exn (Gvecdb.create_edge db ~txn "knows" a b) in
-        let outbound = ok_exn (Gvecdb.get_outbound_edges db ~txn a) in
+        let outbound = ok_exn (Gvecdb.get_outbound_edges db ~txn a ()) in
         (e, List.length outbound))
   in
   match result with
@@ -373,9 +368,9 @@ let test_complex_graph_in_txn () =
         let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" a b) in
         let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" b c) in
         let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" a c) in
-        let a_out = ok_exn (Gvecdb.get_outbound_edges db ~txn a) in
-        let b_out = ok_exn (Gvecdb.get_outbound_edges db ~txn b) in
-        let c_in = ok_exn (Gvecdb.get_inbound_edges db ~txn c) in
+        let a_out = ok_exn (Gvecdb.get_outbound_edges db ~txn a ()) in
+        let b_out = ok_exn (Gvecdb.get_outbound_edges db ~txn b ()) in
+        let c_in = ok_exn (Gvecdb.get_inbound_edges db ~txn c ()) in
         (List.length a_out, List.length b_out, List.length c_in))
   in
   match result with
@@ -421,15 +416,14 @@ let test_props_update_in_txn () =
   let node = create_person db "Alice" 30 "alice@test.com" "bio" in
   let result =
     Gvecdb.with_transaction db (fun txn ->
-        ok_exn
-          (Gvecdb.set_node_props_capnp db ~txn node "person"
-             (fun b ->
-               SchemaBuilder.Builder.Person.name_set b "Alice Updated";
-               SchemaBuilder.Builder.Person.age_set_int_exn b 31;
-               SchemaBuilder.Builder.Person.email_set b "alice@test.com";
-               SchemaBuilder.Builder.Person.bio_set b "bio")
-             SchemaBuilder.Builder.Person.init_root
-             SchemaBuilder.Builder.Person.to_message);
+        let builder = SchemaBuilder.Builder.Person.init_root () in
+        SchemaBuilder.Builder.Person.name_set builder "Alice Updated";
+        SchemaBuilder.Builder.Person.age_set_int_exn builder 31;
+        SchemaBuilder.Builder.Person.email_set builder "alice@test.com";
+        SchemaBuilder.Builder.Person.bio_set builder "bio";
+        let bs = capnp_to_bigstring
+            SchemaBuilder.Builder.Person.to_message builder in
+        ok_exn (Gvecdb.set_node_props db ~txn node "person" bs);
         get_person_name db ~txn node)
   in
   match result with
@@ -485,7 +479,7 @@ let test_concurrent_ro_sees_consistent_snapshot () =
             Atomic.set writer_started true;
             Unix.sleepf 0.01;
             let name = get_person_name db ~txn alice in
-            let edges = ok_exn (Gvecdb.get_outbound_edges db ~txn alice) in
+            let edges = ok_exn (Gvecdb.get_outbound_edges db ~txn alice ()) in
             ro_result := Some (name, List.length edges);
             Atomic.set ro_done true;
             ()))
@@ -495,15 +489,14 @@ let test_concurrent_ro_sees_consistent_snapshot () =
   done;
   let _ =
     Gvecdb.with_transaction db (fun txn ->
-        ok_exn
-          (Gvecdb.set_node_props_capnp db ~txn alice "person"
-             (fun b ->
-               SchemaBuilder.Builder.Person.name_set b "Alice Modified";
-               SchemaBuilder.Builder.Person.age_set_int_exn b 31;
-               SchemaBuilder.Builder.Person.email_set b "alice@test.com";
-               SchemaBuilder.Builder.Person.bio_set b "bio")
-             SchemaBuilder.Builder.Person.init_root
-             SchemaBuilder.Builder.Person.to_message);
+        let builder = SchemaBuilder.Builder.Person.init_root () in
+        SchemaBuilder.Builder.Person.name_set builder "Alice Modified";
+        SchemaBuilder.Builder.Person.age_set_int_exn builder 31;
+        SchemaBuilder.Builder.Person.email_set builder "alice@test.com";
+        SchemaBuilder.Builder.Person.bio_set builder "bio";
+        let bs = capnp_to_bigstring
+            SchemaBuilder.Builder.Person.to_message builder in
+        ok_exn (Gvecdb.set_node_props db ~txn alice "person" bs);
         let charlie = ok_exn (Gvecdb.create_node db ~txn "person") in
         let _ = ok_exn (Gvecdb.create_edge db ~txn "knows" alice charlie) in
         ())
@@ -578,15 +571,14 @@ let test_concurrent_reads_during_write () =
   let writer =
     Domain.spawn (fun () ->
         Gvecdb.with_transaction db (fun txn ->
-            ok_exn
-              (Gvecdb.set_node_props_capnp db ~txn node "person"
-                 (fun b ->
-                   SchemaBuilder.Builder.Person.name_set b "Modified";
-                   SchemaBuilder.Builder.Person.age_set_int_exn b 2;
-                   SchemaBuilder.Builder.Person.email_set b "email";
-                   SchemaBuilder.Builder.Person.bio_set b "bio")
-                 SchemaBuilder.Builder.Person.init_root
-                 SchemaBuilder.Builder.Person.to_message);
+            let builder = SchemaBuilder.Builder.Person.init_root () in
+            SchemaBuilder.Builder.Person.name_set builder "Modified";
+            SchemaBuilder.Builder.Person.age_set_int_exn builder 2;
+            SchemaBuilder.Builder.Person.email_set builder "email";
+            SchemaBuilder.Builder.Person.bio_set builder "bio";
+            let bs = capnp_to_bigstring
+                SchemaBuilder.Builder.Person.to_message builder in
+            ok_exn (Gvecdb.set_node_props db ~txn node "person" bs);
             Atomic.set writer_started true;
             Unix.sleepf 0.03;
             Atomic.set writer_done true;
@@ -629,16 +621,15 @@ let test_high_contention_scenario () =
                 match
                   Gvecdb.with_transaction db (fun txn ->
                       let n = ok_exn (Gvecdb.create_node db ~txn "person") in
-                      ok_exn
-                        (Gvecdb.set_node_props_capnp db ~txn n "person"
-                           (fun b ->
-                             SchemaBuilder.Builder.Person.name_set b
-                               (Printf.sprintf "Person_%d_%d" i j);
-                             SchemaBuilder.Builder.Person.age_set_int_exn b j;
-                             SchemaBuilder.Builder.Person.email_set b "email";
-                             SchemaBuilder.Builder.Person.bio_set b "bio")
-                           SchemaBuilder.Builder.Person.init_root
-                           SchemaBuilder.Builder.Person.to_message);
+                      let builder = SchemaBuilder.Builder.Person.init_root () in
+                      SchemaBuilder.Builder.Person.name_set builder
+                        (Printf.sprintf "Person_%d_%d" i j);
+                      SchemaBuilder.Builder.Person.age_set_int_exn builder j;
+                      SchemaBuilder.Builder.Person.email_set builder "email";
+                      SchemaBuilder.Builder.Person.bio_set builder "bio";
+                      let bs = capnp_to_bigstring
+                          SchemaBuilder.Builder.Person.to_message builder in
+                      ok_exn (Gvecdb.set_node_props db ~txn n "person" bs);
                       n)
                 with
                 | Some _ -> Atomic.incr success_count

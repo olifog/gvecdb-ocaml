@@ -1,0 +1,15 @@
+(rule
+ (targets gvecdb_api.ml gvecdb_api.mli)
+ (deps gvecdb_api.capnp)
+ (action (run capnp compile -o %{bin:capnpc-ocaml} %{deps})))
+
+(library
+ (name gvecdb_rpc)
+ (modules gvecdb_api gvecdb_service gvecdb_client)
+ (libraries gvecdb capnp capnp-rpc capnp-rpc-unix bigstringaf stdint))
+
+(executable
+ (name main)
+ (public_name gvecdb-server)
+ (modules main)
+ (libraries gvecdb gvecdb_rpc capnp-rpc-unix eio_main cmdliner))

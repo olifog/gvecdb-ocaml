@@ -56,18 +56,18 @@ let test_delete_node_cascades_edges () =
   check bool "e1 exists before" true (ok_exn (Gvecdb.edge_exists db e1));
   check bool "e2 exists before" true (ok_exn (Gvecdb.edge_exists db e2));
   check int "alice outbound before" 1
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice)));
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice ())));
   check int "alice inbound before" 1
-    (List.length (ok_exn (Gvecdb.get_inbound_edges db alice)));
+    (List.length (ok_exn (Gvecdb.get_inbound_edges db alice ())));
   ok_exn (Gvecdb.delete_node db alice);
   check bool "alice not exists after" false
     (ok_exn (Gvecdb.node_exists db alice));
   check bool "e1 not exists after" false (ok_exn (Gvecdb.edge_exists db e1));
   check bool "e2 not exists after" false (ok_exn (Gvecdb.edge_exists db e2));
   check int "bob inbound after" 0
-    (List.length (ok_exn (Gvecdb.get_inbound_edges db bob)));
+    (List.length (ok_exn (Gvecdb.get_inbound_edges db bob ())));
   check int "charlie outbound after" 0
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db charlie)))
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db charlie ())))
 
 (** {1 Edge tests} *)
 
@@ -117,14 +117,14 @@ let test_delete_edge_cleans_adjacency () =
   let bob = ok_exn (Gvecdb.create_node db "person") in
   let edge = ok_exn (Gvecdb.create_edge db "knows" alice bob) in
   check int "outbound before" 1
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice)));
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice ())));
   check int "inbound before" 1
-    (List.length (ok_exn (Gvecdb.get_inbound_edges db bob)));
+    (List.length (ok_exn (Gvecdb.get_inbound_edges db bob ())));
   ok_exn (Gvecdb.delete_edge db edge);
   check int "outbound after" 0
-    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice)));
+    (List.length (ok_exn (Gvecdb.get_outbound_edges db alice ())));
   check int "inbound after" 0
-    (List.length (ok_exn (Gvecdb.get_inbound_edges db bob)))
+    (List.length (ok_exn (Gvecdb.get_inbound_edges db bob ())))
 
 (** {1 Property tests} *)
 
@@ -142,12 +142,11 @@ let test_edge_props_roundtrip () =
   let bob = ok_exn (Gvecdb.create_node db "person") in
   let edge = create_knows_edge db alice bob 1234567890L "Met at work" 0.75 in
   let since, context, strength =
-    ok_exn
-      (Gvecdb.get_edge_props_capnp db edge SchemaReader.Reader.Knows.of_message
-         (fun r ->
-           ( SchemaReader.Reader.Knows.since_get r,
-             SchemaReader.Reader.Knows.context_get r,
-             SchemaReader.Reader.Knows.strength_get r )))
+    read_edge_props_capnp db edge SchemaReader.Reader.Knows.of_message
+      (fun r ->
+        ( SchemaReader.Reader.Knows.since_get r,
+          SchemaReader.Reader.Knows.context_get r,
+          SchemaReader.Reader.Knows.strength_get r ))
   in
   check int64 "since" 1234567890L since;
   check string "context" "Met at work" context;
@@ -158,13 +157,11 @@ let test_update_node_props () =
   register_schemas db;
   let alice = create_person db "Alice" 30 "alice@example.com" "Engineer" in
   check string "name before" "Alice" (get_person_name db alice);
-  ok_exn
-    (Gvecdb.set_node_props_capnp db alice "person"
-       (fun b ->
-         SchemaBuilder.Builder.Person.name_set b "Alice Smith";
-         SchemaBuilder.Builder.Person.age_set_int_exn b 31)
-       SchemaBuilder.Builder.Person.init_root
-       SchemaBuilder.Builder.Person.to_message);
+  let builder = SchemaBuilder.Builder.Person.init_root () in
+  SchemaBuilder.Builder.Person.name_set builder "Alice Smith";
+  SchemaBuilder.Builder.Person.age_set_int_exn builder 31;
+  let bs = capnp_to_bigstring SchemaBuilder.Builder.Person.to_message builder in
+  ok_exn (Gvecdb.set_node_props db alice "person" bs);
   check string "name after" "Alice Smith" (get_person_name db alice)
 
 let test_edge_meta_preserved_after_props_update () =
@@ -173,11 +170,10 @@ let test_edge_meta_preserved_after_props_update () =
   let alice = ok_exn (Gvecdb.create_node db "person") in
   let bob = ok_exn (Gvecdb.create_node db "person") in
   let edge = ok_exn (Gvecdb.create_edge db "knows" alice bob) in
-  ok_exn
-    (Gvecdb.set_edge_props_capnp db edge "knows"
-       (fun b -> SchemaBuilder.Builder.Knows.context_set b "test")
-       SchemaBuilder.Builder.Knows.init_root
-       SchemaBuilder.Builder.Knows.to_message);
+  let builder = SchemaBuilder.Builder.Knows.init_root () in
+  SchemaBuilder.Builder.Knows.context_set builder "test";
+  let bs = capnp_to_bigstring SchemaBuilder.Builder.Knows.to_message builder in
+  ok_exn (Gvecdb.set_edge_props db edge bs);
   let info = ok_exn (Gvecdb.get_edge_info db edge) in
   check int64 "src preserved" alice info.src;
   check int64 "dst preserved" bob info.dst;
@@ -263,9 +259,9 @@ let test_persistence_across_reopen () =
           check int64 "edge src" alice_id edge_info.src;
           check int64 "edge dst" bob_id edge_info.dst;
           check string "edge type" "knows" edge_info.edge_type;
-          let outbound = ok_exn (Gvecdb.get_outbound_edges db alice_id) in
+          let outbound = ok_exn (Gvecdb.get_outbound_edges db alice_id ()) in
           check int "outbound count" 1 (List.length outbound);
-          let inbound = ok_exn (Gvecdb.get_inbound_edges db bob_id) in
+          let inbound = ok_exn (Gvecdb.get_inbound_edges db bob_id ()) in
           check int "inbound count" 1 (List.length inbound)))
 
 (** {1 Test runner} *)
