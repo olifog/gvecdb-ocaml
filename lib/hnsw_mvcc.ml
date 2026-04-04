@@ -4,7 +4,10 @@
     - Superblock (4KB): magic, version, params, active page table pointer
     - Page Table A (4MB): epoch, metadata, page offsets
     - Page Table B (4MB): shadow page table for atomic swap
-    - Data Pages: append-only node pages (4KB each, 11 nodes per page)
+    - Data Pages: append-only node pages (page_size each, nodes_per_page nodes)
+
+    Node size and page size depend on the vector dimension stored in the
+    page table. Layout is computed once at open/create time.
 
     Write serialization is provided by the caller holding an LMDB write
     transaction (single-writer guarantee). Readers use epoch-based snapshot
@@ -13,9 +16,9 @@
 type bigstring = Common.bigstring
 
 let magic = "GVECHNSW"
-let current_version = 3L
+let current_version = 5L
 let superblock_size = 4096
-let page_table_size = 4194304 (* 4MB - fits ~524K pages = ~5.8M nodes *)
+let page_table_size = 33554432 (* 32MB - fits ~4.2M pages *)
 let header_size = superblock_size + (2 * page_table_size)
 let sb_magic_off = 0
 let sb_version_off = 8
@@ -37,7 +40,7 @@ let pt_max_data_offset_off = 40 (* tracks actual end of data region *)
 let pt_offsets_off = 48
 
 let max_pages_in_table =
-  (page_table_size - pt_offsets_off - 4) / 8 (* ~8000 pages *)
+  (page_table_size - pt_offsets_off - 4) / 8
 
 type error =
   | Invalid_magic
@@ -57,8 +60,7 @@ let error_to_string = function
   | Checksum_error msg -> Printf.sprintf "checksum error: %s" msg
   | Corrupted_data msg -> Printf.sprintf "corrupted: %s" msg
   | Capacity_exceeded ->
-      Printf.sprintf "capacity exceeded (max %d nodes)"
-        (max_pages_in_table * Hnsw_page.nodes_per_page)
+      Printf.sprintf "capacity exceeded (max %d pages)" max_pages_in_table
 
 type page_table = {
   epoch : int64;
@@ -77,7 +79,6 @@ type write_txn = {
   base_table : page_table;
   dirty_pages : (int, bytes) Hashtbl.t;
   mutable overlay : (int, Hnsw_page.node_data) Hashtbl.t option;
-      (* uncommitted writes *)
   mutable new_entry_point : int;
   mutable new_max_level : int;
   mutable new_node_count : int;
@@ -90,6 +91,7 @@ type t = {
   mutable file_size : int;
   mutable active_table : page_table;
   mutable active_which : int;
+  mutable layout : Hnsw_page.layout;
   epochs : (int64, int ref) Hashtbl.t;
   epochs_lock : Mutex.t;
   params : Hnsw.params;
@@ -171,7 +173,10 @@ let verify_page_table_checksum mmap which =
     Bigstringaf.get_int32_le mmap checksum_off
     = Hnsw_page.crc32 mmap base (checksum_off - base)
 
-let initial_file_size = header_size + (64 * Hnsw_page.page_size)
+let layout_for_dim dim = Hnsw_page.compute_layout dim
+
+let initial_file_size_for_layout (layout : Hnsw_page.layout) =
+  header_size + (64 * layout.page_size)
 
 let grow_file t new_size =
   Msync.msync t.mmap;
@@ -196,6 +201,8 @@ let create path ~metric ~(params : Hnsw.params) ?seed () =
       let dir = Filename.dirname path in
       if dir <> "" && dir <> "." && not (Sys.file_exists dir) then
         Unix.mkdir dir 0o755;
+      let layout = layout_for_dim 0 in
+      let initial_file_size = initial_file_size_for_layout layout in
       let fd = Unix.openfile path Unix.[ O_RDWR; O_CREAT; O_TRUNC ] 0o644 in
       Unix.ftruncate fd initial_file_size;
       let mmap = create_mmap fd initial_file_size in
@@ -238,6 +245,7 @@ let create path ~metric ~(params : Hnsw.params) ?seed () =
           file_size = initial_file_size;
           active_table = empty;
           active_which = 0;
+          layout;
           epochs = Hashtbl.create 16;
           epochs_lock = Mutex.create ();
           params;
@@ -265,9 +273,6 @@ let open_existing ?seed path =
             let version = Bigstringaf.get_int64_le mmap sb_version_off in
             if version <> current_version then Error (Version_mismatch version)
             else
-              (* Superblock checksum may be stale after a crash between the
-         page table pointer swap and the checksum write. Tolerate this
-         as long as at least one page table has a valid checksum. *)
               let active_which =
                 Bigstringaf.get_int64_le mmap sb_active_root_off |> Int64.to_int
               in
@@ -311,6 +316,9 @@ let open_existing ?seed path =
                         |> Int64.float_of_bits;
                     }
                   in
+                  let layout =
+                    layout_for_dim (max 0 active_table.dimension)
+                  in
                   Ok
                     {
                       fd;
@@ -318,6 +326,7 @@ let open_existing ?seed path =
                       file_size;
                       active_table;
                       active_which = valid_which;
+                      layout;
                       epochs = Hashtbl.create 16;
                       epochs_lock = Mutex.create ();
                       params;
@@ -357,13 +366,37 @@ let end_read t table =
 let read_node t table ~slot_id =
   if slot_id < 0 || slot_id >= table.node_count then None
   else
-    let page_id = Hnsw_page.slot_to_page slot_id in
+    let layout = t.layout in
+    let page_id = Hnsw_page.slot_to_page layout slot_id in
     if page_id >= table.page_count then None
     else
       let page_offset = table.offsets.(page_id) in
-      let node_offset = Hnsw_page.slot_offset_in_page slot_id in
+      let node_offset = Hnsw_page.slot_offset_in_page layout slot_id in
       let file_offset = Int64.to_int page_offset + node_offset in
       Some (Hnsw_page.read_node_from_mmap t.mmap ~file_offset)
+
+let read_node_with_vec t table ~slot_id =
+  if slot_id < 0 || slot_id >= table.node_count then None
+  else
+    let layout = t.layout in
+    let page_id = Hnsw_page.slot_to_page layout slot_id in
+    if page_id >= table.page_count then None
+    else
+      let page_offset = table.offsets.(page_id) in
+      let node_offset = Hnsw_page.slot_offset_in_page layout slot_id in
+      let file_offset = Int64.to_int page_offset + node_offset in
+      let node = Hnsw_page.read_node_from_mmap t.mmap ~file_offset in
+      let ivec =
+        if layout.dim > 0 then begin
+          let vec_header_size = Hnsw_page.node_vec_data_off - Hnsw_page.node_vec_header_off in
+          let ivec_len = vec_header_size + layout.dim * 4 in
+          let bs = Bigstringaf.create ivec_len in
+          Bigstringaf.blit t.mmap ~src_off:(file_offset + Hnsw_page.node_vec_header_off)
+            bs ~dst_off:0 ~len:ivec_len;
+          Some bs
+        end else None
+      in
+      Some { node with Hnsw_page.inline_vec = ivec }
 
 let begin_write t =
   let table = t.active_table in
@@ -382,21 +415,23 @@ let get_or_copy_page t txn page_id =
   match Hashtbl.find_opt txn.dirty_pages page_id with
   | Some page -> page
   | None ->
+      let layout = t.layout in
       let page =
         if page_id < txn.base_table.page_count then
           Hnsw_page.mmap_to_bytes t.mmap
             ~offset:(Int64.to_int txn.base_table.offsets.(page_id))
-            ~len:Hnsw_page.page_size
-        else Hnsw_page.create_empty_page ()
+            ~len:layout.page_size
+        else Hnsw_page.create_empty_page layout.page_size
       in
       Hashtbl.replace txn.dirty_pages page_id page;
       page
 
 let write_node t txn ~slot_id node =
-  let page_id = Hnsw_page.slot_to_page slot_id in
+  let layout = t.layout in
+  let page_id = Hnsw_page.slot_to_page layout slot_id in
   let page = get_or_copy_page t txn page_id in
-  Hnsw_page.write_node_to_page page
-    ~offset:(Hnsw_page.slot_offset_in_page slot_id)
+  Hnsw_page.write_node_to_page layout page
+    ~offset:(Hnsw_page.slot_offset_in_page layout slot_id)
     node;
   if slot_id >= txn.new_node_count then txn.new_node_count <- slot_id + 1
 
@@ -406,18 +441,24 @@ let set_entry_point txn ~entry_point ~max_level =
 
 let set_dimension txn ~dimension = txn.new_dimension <- dimension
 
+let update_layout t dim =
+  if dim > 0 && dim <> t.layout.dim then
+    t.layout <- layout_for_dim dim
+
 let commit t txn =
   try
+    update_layout t txn.new_dimension;
+    let layout = t.layout in
     (* Flush overlay to dirty_pages *)
     (match txn.overlay with
     | None -> ()
     | Some ov ->
         Hashtbl.iter
           (fun slot_id node ->
-            let page_id = Hnsw_page.slot_to_page slot_id in
+            let page_id = Hnsw_page.slot_to_page layout slot_id in
             let page = get_or_copy_page t txn page_id in
-            Hnsw_page.write_node_to_page page
-              ~offset:(Hnsw_page.slot_offset_in_page slot_id)
+            Hnsw_page.write_node_to_page layout page
+              ~offset:(Hnsw_page.slot_offset_in_page layout slot_id)
               node)
           ov);
     let max_dirty_page =
@@ -441,7 +482,7 @@ let commit t txn =
         List.map
           (fun (pid, page) ->
             let o = !write_offset in
-            write_offset := Int64.add o (Int64.of_int Hnsw_page.page_size);
+            write_offset := Int64.add o (Int64.of_int layout.page_size);
             new_offsets.(pid) <- o;
             (o, page))
           dirty_list
@@ -449,14 +490,14 @@ let commit t txn =
       let new_max_offset = !write_offset in
       (* grow file if needed *)
       let needed = Int64.to_int new_max_offset in
+      let initial_file_size = initial_file_size_for_layout layout in
       if needed > t.file_size then
         grow_file t (max (t.file_size * 2) (needed + initial_file_size));
       (* write pages *)
       List.iter
         (fun (off, page) ->
-          let bs = Hnsw_page.page_to_bigstring page in
-          Bigstringaf.blit bs ~src_off:0 t.mmap ~dst_off:(Int64.to_int off)
-            ~len:Hnsw_page.page_size)
+          Hnsw_page.blit_page_to_mmap page t.mmap
+            ~dst_off:(Int64.to_int off) ~len:layout.page_size)
         allocations;
       (* build new page table *)
       let new_table =
@@ -489,8 +530,6 @@ let commit t txn =
       Error (IO_error (Printf.sprintf "%s: %s" fn (Unix.error_message e)))
   | Invalid_argument msg -> Error (IO_error msg)
 
-(* this is a noop cuz overlay and dirty pages are in-memory only (not written to mmap
-   until commit), so they are reclaimed by GC *)
 let rollback _t _txn = ()
 
 let get_metric t = t.metric
@@ -500,12 +539,15 @@ let get_entry_point t = t.active_table.entry_point
 let get_max_level t = t.active_table.max_level
 let get_dimension t = t.active_table.dimension
 let get_epoch t = t.active_table.epoch
+let get_layout t = t.layout
+let get_mmap t = t.mmap
 
 let write_nodes t nodes ~entry_point ~max_level ~dimension =
+  update_layout t dimension;
   let txn = begin_write t in
+  set_dimension txn ~dimension;
   List.iter (fun (slot_id, node) -> write_node t txn ~slot_id node) nodes;
   set_entry_point txn ~entry_point ~max_level;
-  set_dimension txn ~dimension;
   commit t txn
 
 let base_table txn = txn.base_table
@@ -519,21 +561,12 @@ type search_context = {
   mvcc : t;
   table : page_table;
   overlay : (int, Hnsw_page.node_data) Hashtbl.t option;
-      (* uncommitted writes *)
-  dist_from_offset : int64 -> float;
+  dist_from_offset : int -> float;
+  dist_from_inline : bigstring -> float;
 }
 
-let create_search_context mvcc table ~dist_from_offset ~overlay =
-  { mvcc; table; overlay; dist_from_offset }
-
-(* Read with overlay fallback for read-your-writes *)
-let read_with_overlay t table overlay ~slot_id =
-  match overlay with
-  | Some ov -> (
-      match Hashtbl.find_opt ov slot_id with
-      | Some node -> Some node
-      | None -> read_node t table ~slot_id)
-  | None -> read_node t table ~slot_id
+let create_search_context mvcc table ~dist_from_offset ~dist_from_inline ~overlay =
+  { mvcc; table; overlay; dist_from_offset; dist_from_inline }
 
 let rec take_n n acc = function
   | [] -> List.rev acc
@@ -548,16 +581,17 @@ let search_layer_mvcc ctx ~entry_points ~ef ~layer =
   let mmap = ctx.mvcc.mmap in
   let table = ctx.table in
   let overlay = ctx.overlay in
+  let layout = ctx.mvcc.layout in
 
   let slot_offset slot_id =
     if slot_id < 0 || slot_id >= table.node_count then None
     else
-      let page_id = Hnsw_page.slot_to_page slot_id in
+      let page_id = Hnsw_page.slot_to_page layout slot_id in
       if page_id >= table.page_count then None
       else
         Some
           (Int64.to_int table.offsets.(page_id)
-          + Hnsw_page.slot_offset_in_page slot_id)
+          + Hnsw_page.slot_offset_in_page layout slot_id)
   in
 
   let slot_dist slot_id =
@@ -569,14 +603,20 @@ let search_layer_mvcc ctx ~entry_points ~ef ~layer =
     match from_overlay with
     | Some node ->
         if node.Hnsw_page.deleted then infinity
-        else ctx.dist_from_offset node.vector_offset
+        else begin
+          match slot_offset slot_id with
+          | Some fo -> ctx.dist_from_offset (fo + Hnsw_page.node_vec_header_off)
+          | None ->
+              (match node.inline_vec with
+              | Some iv -> ctx.dist_from_inline iv
+              | None -> infinity)
+        end
     | None -> (
         match slot_offset slot_id with
         | None -> infinity
         | Some fo ->
             if Hnsw_page.mmap_is_deleted mmap ~file_offset:fo then infinity
-            else
-              ctx.dist_from_offset (Hnsw_page.mmap_vector_offset mmap ~file_offset:fo))
+            else ctx.dist_from_offset (fo + Hnsw_page.node_vec_header_off))
   in
 
   (* Initialize with entry points *)
@@ -657,12 +697,7 @@ let search_mvcc ctx ~k ~ef =
     take_n k [] results
   end
 
-(* Heuristic neighbor selection (Algorithm 4 from Malkov & Yashunin 2016).
-   prefers diversity: a candidate is selected only if it is closer to the
-   query than to any already-selected neighbor (i.e. not "dominated").
-   remaining slots are filled from discarded candidates (keepPrunedConnections)
-   to ensure we always return up to m neighbors.
-   pairwise_dist slot_a slot_b returns the distance between two stored nodes. *)
+(* Heuristic neighbor selection (Algorithm 4 from Malkov & Yashunin 2016). *)
 let select_neighbors candidates m ~pairwise_dist =
   let sorted =
     List.sort (fun (_, d1) (_, d2) -> Float.compare d1 d2) candidates
@@ -684,24 +719,27 @@ let select_neighbors candidates m ~pairwise_dist =
   if remaining > 0 then selected @ take_n remaining [] discarded
   else selected
 
-let read_node_from_txn t (txn : write_txn) ~slot_id =
-  read_with_overlay t txn.base_table txn.overlay ~slot_id
-
-(* insert into MVCC, runs algorithm against mmap + overlay
-   compute_distance: takes vector_offset and returns distance to query *)
-let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
-    ~compute_pairwise_distance ~dimension =
+(* Insert into MVCC with inline vector data.
+   inline_vec: the raw vector bytes (16-byte header + dim*4 float32 data)
+   compute_distance: takes a byte offset into the HNSW mmap (at vec header)
+     and returns distance to the query vector
+   compute_pairwise_distance: takes two vector_ids (int64) and returns the
+     distance between them (used for neighbor pruning, reads from vector_file) *)
+let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
+    ~dist_from_inline ~compute_pairwise_distance ~dimension =
   let params = t.params in
   let r = Random.State.float t.rng 1.0 in
   let level = int_of_float (-.log (max r Float.epsilon) *. params.Hnsw.ml) in
   let level = min level (params.Hnsw.max_layers - 1) in
   let slot_id = txn.new_node_count in
 
-  (* Check capacity *)
-  let new_page_id = Hnsw_page.slot_to_page slot_id in
+  if txn.new_dimension < 0 then
+    update_layout t dimension;
+  let layout = t.layout in
+
+  let new_page_id = Hnsw_page.slot_to_page layout slot_id in
   if new_page_id >= max_pages_in_table then Error Capacity_exceeded
   else begin
-    (* Track dimension *)
     let dim_ok =
       if txn.new_dimension < 0 then begin
         txn.new_dimension <- dimension;
@@ -711,7 +749,6 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
     in
     if not dim_ok then Error (Corrupted_data "dimension mismatch")
     else begin
-      (* Create new node *)
       let neighbors =
         Array.init (level + 1) (fun layer ->
             let m = if layer = 0 then 2 * params.m else params.m_max in
@@ -722,12 +759,11 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
           layer_count = level + 1;
           neighbors;
           vector_id;
-          vector_offset;
           deleted = false;
+          inline_vec = Some inline_vec;
         }
       in
 
-      (* Add to overlay for read-your-writes *)
       let overlay =
         match txn.overlay with
         | Some ov -> ov
@@ -739,7 +775,6 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
       Hashtbl.replace overlay slot_id new_node;
       txn.new_node_count <- slot_id + 1;
 
-      (* First node becomes entry point *)
       if txn.new_entry_point < 0 then begin
         txn.new_entry_point <- slot_id;
         txn.new_max_level <- level;
@@ -748,17 +783,16 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
       else begin
         let exception Neighbor_not_found in
         try
-          (* Create search context with overlay *)
           let ctx =
             {
               mvcc = t;
               table = txn.base_table;
               overlay = Some overlay;
               dist_from_offset = compute_distance;
+              dist_from_inline;
             }
           in
 
-          (* Top-down search to find insertion points *)
           let ep = ref [ txn.new_entry_point ] in
           let current_max = txn.new_max_level in
 
@@ -768,19 +802,34 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
             | results -> ep := List.map fst results
           done;
 
-          (* Pairwise distance between two stored nodes, for heuristic
-             neighbor selection. *)
+          let vec_location slot =
+            match Hashtbl.find_opt overlay slot with
+            | Some node -> (
+                let page_id = Hnsw_page.slot_to_page layout slot in
+                if page_id < txn.base_table.page_count then
+                  let fo = Int64.to_int txn.base_table.offsets.(page_id)
+                           + Hnsw_page.slot_offset_in_page layout slot in
+                  Some (t.mmap, fo + Hnsw_page.node_vec_header_off)
+                else
+                  (match node.Hnsw_page.inline_vec with
+                  | Some iv -> Some (iv, 0)
+                  | None -> None))
+            | None ->
+                let page_id = Hnsw_page.slot_to_page layout slot in
+                if slot < txn.base_table.node_count && page_id < txn.base_table.page_count then
+                  let fo = Int64.to_int txn.base_table.offsets.(page_id)
+                           + Hnsw_page.slot_offset_in_page layout slot in
+                  Some (t.mmap, fo + Hnsw_page.node_vec_header_off)
+                else None
+          in
+
           let pairwise_dist slot_a slot_b =
-            match
-              ( read_node_from_txn t txn ~slot_id:slot_a,
-                read_node_from_txn t txn ~slot_id:slot_b )
-            with
-            | Some a, Some b ->
-                compute_pairwise_distance a.vector_offset b.vector_offset
+            match (vec_location slot_a, vec_location slot_b) with
+            | Some (buf_a, off_a), Some (buf_b, off_b) ->
+                compute_pairwise_distance buf_a off_a buf_b off_b
             | _ -> infinity
           in
 
-          (* Layer-by-layer insertion *)
           for layer = min level current_max downto 0 do
             let m = if layer = 0 then 2 * params.m else params.m_max in
             let candidates =
@@ -789,7 +838,6 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
             in
             let selected = select_neighbors candidates m ~pairwise_dist in
 
-            (* Set neighbors for new node *)
             let node = Hashtbl.find overlay slot_id in
             List.iteri
               (fun i neighbor_slot ->
@@ -797,7 +845,6 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
                   node.neighbors.(layer).(i) <- neighbor_slot)
               selected;
 
-            (* Add bidirectional links *)
             List.iter
               (fun neighbor_slot ->
                 let neighbor =
@@ -808,14 +855,19 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
                         read_node t txn.base_table ~slot_id:neighbor_slot
                       with
                       | Some n ->
-                          (* Copy to overlay for modification *)
+                          (* inline_vec = None is safe here: this node is being
+                             promoted to the overlay for neighbor-list modification
+                             only.  When commit flushes it to a CoW page,
+                             write_node_to_page with None leaves the vec region
+                             untouched — the CoW page already has the correct
+                             inline vec bytes from get_or_copy_page's mmap blit. *)
                           let copy : Hnsw_page.node_data =
                             {
                               layer_count = n.layer_count;
                               neighbors = Array.map Array.copy n.neighbors;
                               vector_id = n.vector_id;
-                              vector_offset = n.vector_offset;
                               deleted = n.deleted;
+                              inline_vec = None;
                             }
                           in
                           Hashtbl.replace overlay neighbor_slot copy;
@@ -824,33 +876,21 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
                 in
                 if layer < neighbor.layer_count then begin
                   let n_neighbors = neighbor.neighbors.(layer) in
-                  (* Find empty slot *)
                   let empty_idx = ref (-1) in
                   for i = 0 to Array.length n_neighbors - 1 do
                     if n_neighbors.(i) < 0 && !empty_idx < 0 then empty_idx := i
                   done;
                   if !empty_idx >= 0 then n_neighbors.(!empty_idx) <- slot_id
                   else begin
-                    (* Neighbor list full - prune using correct semantics:
-                     compare dist(neighbor, new_node) against dist(neighbor, existing)
-                     to decide whether new_node is a better connection for neighbor. *)
-                    let neighbor_offset = neighbor.vector_offset in
-                    let new_offset = vector_offset in
                     let dist_to_new =
-                      compute_pairwise_distance neighbor_offset new_offset
+                      pairwise_dist neighbor_slot slot_id
                     in
                     let worst_idx = ref (-1) in
                     let worst_dist = ref neg_infinity in
                     for i = 0 to Array.length n_neighbors - 1 do
                       let n_slot = n_neighbors.(i) in
                       if n_slot >= 0 then begin
-                        let d =
-                          match read_node_from_txn t txn ~slot_id:n_slot with
-                          | Some n ->
-                              compute_pairwise_distance neighbor_offset
-                                n.vector_offset
-                          | None -> infinity
-                        in
+                        let d = pairwise_dist neighbor_slot n_slot in
                         if d > !worst_dist then begin
                           worst_dist := d;
                           worst_idx := i
@@ -868,7 +908,6 @@ let insert_mvcc t txn ~vector_id ~vector_offset ~compute_distance
             | _ -> ep := List.map fst candidates
           done;
 
-          (* Update entry point if new node is higher *)
           if level > current_max then begin
             txn.new_entry_point <- slot_id;
             txn.new_max_level <- level

@@ -24,35 +24,30 @@ let with_temp_dir name f =
 (** Test helper: create temp file path *)
 let temp_path dir name = Filename.concat dir (name ^ ".mvcc")
 
+let test_layout = Gvecdb.Hnsw_page.compute_layout 0
+
 (** {1 Page Serialization Tests} *)
 
 let test_node_roundtrip () =
-  (* Create a node with data *)
   let node : Gvecdb.Hnsw_page.node_data =
     {
       layer_count = 3;
       neighbors =
         [|
           [| 1; 2; 3; -1; -1 |];
-          (* layer 0 *)
           [| 4; 5; -1 |];
-          (* layer 1 *)
-          [| 6; -1 |]
-          (* layer 2 *);
+          [| 6; -1 |];
         |];
       vector_id = 42L;
-      vector_offset = 1024L;
       deleted = false;
+      inline_vec = None;
     }
   in
-  (* Create a page and write node *)
-  let page = Gvecdb.Hnsw_page.create_empty_page () in
-  Gvecdb.Hnsw_page.write_node_to_page page ~offset:0 node;
-  (* Read back *)
+  let page = Gvecdb.Hnsw_page.create_empty_page test_layout.page_size in
+  Gvecdb.Hnsw_page.write_node_to_page test_layout page ~offset:0 node;
   let read = Gvecdb.Hnsw_page.read_node_from_page page ~offset:0 in
   check int "layer_count" node.layer_count read.layer_count;
   check int64 "vector_id" node.vector_id read.vector_id;
-  check int64 "vector_offset" node.vector_offset read.vector_offset;
   check bool "deleted" node.deleted read.deleted;
   check int "neighbors array length"
     (Array.length node.neighbors)
@@ -64,21 +59,20 @@ let test_node_deleted_flag () =
       layer_count = 1;
       neighbors = [| [| -1 |] |];
       vector_id = 1L;
-      vector_offset = 0L;
       deleted = true;
+      inline_vec = None;
     }
   in
-  let page = Gvecdb.Hnsw_page.create_empty_page () in
-  Gvecdb.Hnsw_page.write_node_to_page page ~offset:0 node;
+  let page = Gvecdb.Hnsw_page.create_empty_page test_layout.page_size in
+  Gvecdb.Hnsw_page.write_node_to_page test_layout page ~offset:0 node;
   let read = Gvecdb.Hnsw_page.read_node_from_page page ~offset:0 in
   check bool "deleted flag preserved" true read.deleted
 
 let test_page_copy () =
-  let page = Gvecdb.Hnsw_page.create_empty_page () in
+  let page = Gvecdb.Hnsw_page.create_empty_page test_layout.page_size in
   Bytes.set page 100 '\xFF';
   let copy = Gvecdb.Hnsw_page.copy_page page in
   check char "value copied" '\xFF' (Bytes.get copy 100);
-  (* Modify original, copy should be unchanged *)
   Bytes.set page 100 '\x00';
   check char "copy independent" '\xFF' (Bytes.get copy 100)
 
@@ -120,7 +114,6 @@ let test_create_new_file () =
 let test_create_and_reopen () =
   with_temp_dir "reopen" @@ fun dir ->
   let path = temp_path dir "test" in
-  (* Create and write *)
   (match
      Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine
        ~params:Gvecdb.Hnsw.default_params ()
@@ -132,8 +125,8 @@ let test_create_and_reopen () =
           layer_count = 1;
           neighbors = [| Array.make 32 (-1) |];
           vector_id = 100L;
-          vector_offset = 200L;
           deleted = false;
+          inline_vec = None;
         }
       in
       (match
@@ -144,7 +137,6 @@ let test_create_and_reopen () =
       | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
       | Ok () -> ());
       Gvecdb.Hnsw_mvcc.close mvcc);
-  (* Reopen and verify *)
   match Gvecdb.Hnsw_mvcc.open_existing path with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
@@ -160,7 +152,6 @@ let test_create_and_reopen () =
       | None -> fail "node not found after reopen"
       | Some node ->
           check int64 "vector_id preserved" 100L node.vector_id;
-          check int64 "vector_offset preserved" 200L node.vector_offset;
           check bool "not deleted" false node.deleted);
       Gvecdb.Hnsw_mvcc.end_read mvcc table;
       Gvecdb.Hnsw_mvcc.close mvcc
@@ -180,8 +171,8 @@ let test_write_transaction () =
           layer_count = 2;
           neighbors = [| Array.make 32 (-1); Array.make 8 (-1) |];
           vector_id = 1L;
-          vector_offset = 1024L;
           deleted = false;
+          inline_vec = None;
         }
       in
       Gvecdb.Hnsw_mvcc.write_node mvcc txn ~slot_id:0 node;
@@ -213,13 +204,12 @@ let test_rollback () =
           layer_count = 1;
           neighbors = [| Array.make 32 (-1) |];
           vector_id = 1L;
-          vector_offset = 0L;
           deleted = false;
+          inline_vec = None;
         }
       in
       Gvecdb.Hnsw_mvcc.write_node mvcc txn ~slot_id:0 node;
       Gvecdb.Hnsw_mvcc.rollback mvcc txn;
-      (* After rollback, changes should not be visible *)
       check int "node count after rollback" 0
         (Gvecdb.Hnsw_mvcc.get_node_count mvcc);
       Gvecdb.Hnsw_mvcc.close mvcc
@@ -235,14 +225,13 @@ let test_reader_snapshot_isolation () =
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
-      (* Write initial node *)
       let node1 : Gvecdb.Hnsw_page.node_data =
         {
           layer_count = 1;
           neighbors = [| Array.make 32 (-1) |];
           vector_id = 1L;
-          vector_offset = 100L;
           deleted = false;
+          inline_vec = None;
         }
       in
       (match
@@ -253,18 +242,16 @@ let test_reader_snapshot_isolation () =
       | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
       | Ok () -> ());
 
-      (* Begin read transaction (gets snapshot) *)
       let snapshot = Gvecdb.Hnsw_mvcc.begin_read mvcc in
       let initial_epoch = Gvecdb.Hnsw_mvcc.get_epoch mvcc in
 
-      (* Write a second node while reader holds snapshot *)
       let node2 : Gvecdb.Hnsw_page.node_data =
         {
           layer_count = 1;
           neighbors = [| Array.make 32 (-1) |];
           vector_id = 2L;
-          vector_offset = 200L;
           deleted = false;
+          inline_vec = None;
         }
       in
       (match
@@ -278,7 +265,6 @@ let test_reader_snapshot_isolation () =
       let new_epoch = Gvecdb.Hnsw_mvcc.get_epoch mvcc in
       check bool "epoch incremented" true (new_epoch > initial_epoch);
 
-      (* Reader should still see old snapshot - can only see node 0 *)
       (match Gvecdb.Hnsw_mvcc.read_node mvcc snapshot ~slot_id:0 with
       | None -> fail "snapshot should see node 0"
       | Some node -> check int64 "node 0 vector_id" 1L node.vector_id);
@@ -299,14 +285,13 @@ let test_cow_preserves_original () =
   with
   | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
   | Ok mvcc ->
-      (* Write initial data *)
       let node1 : Gvecdb.Hnsw_page.node_data =
         {
           layer_count = 1;
           neighbors = [| [| 5; -1; -1; -1 |] |];
           vector_id = 1L;
-          vector_offset = 100L;
           deleted = false;
+          inline_vec = None;
         }
       in
       (match
@@ -317,18 +302,15 @@ let test_cow_preserves_original () =
       | Error _ -> fail "initial write failed"
       | Ok () -> ());
 
-      (* Get read snapshot *)
       let snapshot = Gvecdb.Hnsw_mvcc.begin_read mvcc in
 
-      (* Modify node via write transaction *)
       let node2 : Gvecdb.Hnsw_page.node_data =
         {
           layer_count = 1;
           neighbors = [| [| 10; 20; -1; -1 |] |];
-          (* Different neighbors *)
           vector_id = 1L;
-          vector_offset = 100L;
           deleted = false;
+          inline_vec = None;
         }
       in
       (match
@@ -339,7 +321,6 @@ let test_cow_preserves_original () =
       | Error _ -> fail "update write failed"
       | Ok () -> ());
 
-      (* Original snapshot should still see old data *)
       (match Gvecdb.Hnsw_mvcc.read_node mvcc snapshot ~slot_id:0 with
       | None -> fail "snapshot lost node"
       | Some node -> check int "original neighbor[0]" 5 node.neighbors.(0).(0));
@@ -366,8 +347,8 @@ let test_large_index () =
                 layer_count = 1;
                 neighbors = [| Array.make 32 (-1) |];
                 vector_id = Int64.of_int i;
-                vector_offset = Int64.of_int (i * 4);
                 deleted = false;
+                inline_vec = None;
               }
             in
             (i, node))
@@ -379,7 +360,6 @@ let test_large_index () =
       | Error e -> fail (Gvecdb.Hnsw_mvcc.error_to_string e)
       | Ok () -> ());
       check int "node count" count (Gvecdb.Hnsw_mvcc.get_node_count mvcc);
-      (* Verify some nodes *)
       let table = Gvecdb.Hnsw_mvcc.begin_read mvcc in
       (match Gvecdb.Hnsw_mvcc.read_node mvcc table ~slot_id:0 with
       | None -> fail "node 0 not found"
@@ -398,7 +378,7 @@ let test_open_nonexistent () =
   let path = temp_path dir "does_not_exist" in
   match Gvecdb.Hnsw_mvcc.open_existing path with
   | Ok _ -> fail "should fail for nonexistent file"
-  | Error _ -> () (* Expected *)
+  | Error _ -> ()
 
 let test_read_out_of_bounds () =
   with_temp_dir "bounds" @@ fun dir ->
@@ -411,10 +391,10 @@ let test_read_out_of_bounds () =
   | Ok mvcc ->
       let table = Gvecdb.Hnsw_mvcc.begin_read mvcc in
       (match Gvecdb.Hnsw_mvcc.read_node mvcc table ~slot_id:999 with
-      | None -> () (* Expected - out of bounds *)
+      | None -> ()
       | Some _ -> fail "should return None for out of bounds");
       (match Gvecdb.Hnsw_mvcc.read_node mvcc table ~slot_id:(-1) with
-      | None -> () (* Expected - negative *)
+      | None -> ()
       | Some _ -> fail "should return None for negative slot");
       Gvecdb.Hnsw_mvcc.end_read mvcc table;
       Gvecdb.Hnsw_mvcc.close mvcc
@@ -453,7 +433,6 @@ let scale_tests = [ ("large index", `Slow, test_large_index) ]
 let test_max_layers_constraint () =
   with_temp_dir "max_layers" @@ fun dir ->
   let path = temp_path dir "test" in
-  (* Try to create with max_layers=10 - should fail *)
   let bad_params = { Gvecdb.Hnsw.default_params with max_layers = 10 } in
   match
     Gvecdb.Hnsw_mvcc.create path ~metric:Gvecdb.Types.Cosine ~params:bad_params

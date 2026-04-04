@@ -8,9 +8,9 @@ module Bigstring = Bigstringaf
 
 (* Constants from hnsw_mvcc.ml *)
 let magic = "GVECHNSW"
-let current_version = 3L
+let current_version = 5L
 let superblock_size = 4096
-let page_table_size = 4194304
+let page_table_size = 33554432
 let _header_size = superblock_size + (2 * page_table_size)
 
 (* Superblock offsets *)
@@ -35,16 +35,10 @@ let pt_metric_off = 36
 let pt_max_data_offset_off = 40
 let pt_offsets_off = 48
 
-(* Free list offsets *)
-
 (* Node layout - derived from Hnsw_page *)
-let page_size = Gvecdb.Hnsw_page.page_size
-let nodes_per_page = Gvecdb.Hnsw_page.nodes_per_page
-let node_size = Gvecdb.Hnsw_page.node_size
 let node_layer_count_off = Gvecdb.Hnsw_page.node_layer_count_off
 let node_layer0_off = Gvecdb.Hnsw_page.node_layer0_off
 let node_vector_id_off = Gvecdb.Hnsw_page.node_vector_id_off
-let node_vector_offset_off = Gvecdb.Hnsw_page.node_vector_offset_off
 let node_deleted_off = Gvecdb.Hnsw_page.node_deleted_off
 let layer0_max_neighbors = Gvecdb.Hnsw_page.layer0_max_neighbors
 let page_table_offset which = superblock_size + (which * page_table_size)
@@ -112,9 +106,7 @@ let cleanup_db_files path =
    Binary Inspection Functions
    ============================================================================ *)
 
-(* Inspection result - some fields are for display/debugging only *)
 type inspection_result = {
-  (* Superblock *)
   sb_magic : string;
   sb_version : int64;
   sb_active_which : int; [@warning "-69"]
@@ -124,7 +116,6 @@ type inspection_result = {
   sb_max_layers : int; [@warning "-69"]
   sb_ml : float; [@warning "-69"]
   sb_checksum_valid : bool;
-  (* Active Page Table *)
   pt_epoch : int64;
   pt_page_count : int;
   pt_entry_point : int;
@@ -135,19 +126,16 @@ type inspection_result = {
   pt_max_data_offset : int64; [@warning "-69"]
   pt_checksum_valid : bool;
   pt_page_offsets : int64 array;
-  (* Shadow Page Table *)
   shadow_epoch : int64;
   shadow_node_count : int; [@warning "-69"]
-  (* Sample Nodes *)
   sample_nodes : (int * node_inspection) list;
 }
 
 and node_inspection = {
   n_layer_count : int;
   n_vector_id : int64; [@warning "-69"]
-  n_vector_offset : int64; [@warning "-69"]
   n_deleted : bool;
-  n_layer0_neighbors : int list; (* First few valid neighbors *)
+  n_layer0_neighbors : int list;
 }
 
 let read_file_bytes path =
@@ -227,6 +215,9 @@ let inspect_mvcc_file path : inspection_result =
   Printf.printf "  max_data_offset: %Ld (%.2f KB)\n" pt_max_data_offset
     (Int64.to_float pt_max_data_offset /. 1024.0);
 
+  (* Compute layout for this dimension *)
+  let layout = Gvecdb.Hnsw_page.compute_layout (max 0 pt_dimension) in
+
   (* Page offsets *)
   let pt_page_offsets =
     Array.init pt_page_count (fun i ->
@@ -263,7 +254,8 @@ let inspect_mvcc_file path : inspection_result =
   Printf.printf "  node_count: %d\n" shadow_node_count;
 
   (* Sample Nodes *)
-  Printf.printf "\n--- Sample Nodes ---\n";
+  Printf.printf "\n--- Sample Nodes (node_size=%d, nodes_per_page=%d) ---\n"
+    layout.node_size layout.nodes_per_page;
   let sample_slots =
     if pt_node_count <= 10 then List.init pt_node_count Fun.id
     else [ 0; 1; 2; pt_node_count / 2; pt_node_count - 2; pt_node_count - 1 ]
@@ -274,14 +266,14 @@ let inspect_mvcc_file path : inspection_result =
       (fun slot_id ->
         if slot_id < 0 || slot_id >= pt_node_count then None
         else begin
-          let page_id = slot_id / nodes_per_page in
+          let page_id = slot_id / layout.nodes_per_page in
           if page_id >= pt_page_count then None
           else begin
             let page_offset = Int64.to_int pt_page_offsets.(page_id) in
-            let node_offset = slot_id mod nodes_per_page * node_size in
+            let node_offset = (slot_id mod layout.nodes_per_page) * layout.node_size in
             let file_offset = page_offset + node_offset in
 
-            if file_offset + node_size > file_size then None
+            if file_offset + layout.node_size > file_size then None
             else begin
               let n_layer_count =
                 Char.code (Bytes.get buf (file_offset + node_layer_count_off))
@@ -289,14 +281,10 @@ let inspect_mvcc_file path : inspection_result =
               let n_vector_id =
                 get_i64 buf (file_offset + node_vector_id_off)
               in
-              let n_vector_offset =
-                get_i64 buf (file_offset + node_vector_offset_off)
-              in
               let n_deleted =
                 Bytes.get buf (file_offset + node_deleted_off) <> '\x00'
               in
 
-              (* Read layer 0 neighbors *)
               let n_layer0_neighbors =
                 List.init (min 8 layer0_max_neighbors) (fun i ->
                     get_i32 buf (file_offset + node_layer0_off + (i * 4)))
@@ -307,7 +295,6 @@ let inspect_mvcc_file path : inspection_result =
                 page_id file_offset;
               Printf.printf "    layer_count: %d\n" n_layer_count;
               Printf.printf "    vector_id: %Ld\n" n_vector_id;
-              Printf.printf "    vector_offset: %Ld\n" n_vector_offset;
               Printf.printf "    deleted: %b\n" n_deleted;
               Printf.printf "    layer0_neighbors (first 8 valid): %s\n"
                 (String.concat ", " (List.map string_of_int n_layer0_neighbors));
@@ -317,7 +304,6 @@ let inspect_mvcc_file path : inspection_result =
                   {
                     n_layer_count;
                     n_vector_id;
-                    n_vector_offset;
                     n_deleted;
                     n_layer0_neighbors;
                   } )
@@ -370,7 +356,6 @@ let test_create_and_inspect () =
   let db = ok_exn (Gvecdb.create db_path) in
   Gvecdb.close db;
 
-  (* Find and inspect the HNSW file *)
   let hnsw_path = base_path ^ ".hnsw/embedding.hnsw.mvcc" in
   if not (Sys.file_exists hnsw_path) then
     Printf.printf "Note: No HNSW file yet (no vectors created)\n"
@@ -394,7 +379,6 @@ let test_populate_and_inspect () =
   Printf.printf "TEST: Populate %d Vectors and Inspect\n" n_vectors;
   Printf.printf "========================================\n";
 
-  (* Create and populate *)
   let db = ok_exn (Gvecdb.create db_path) in
   let vector_ids =
     with_txn db (fun txn ->
@@ -408,7 +392,6 @@ let test_populate_and_inspect () =
 
   Printf.printf "Created %d vectors\n" (Array.length vector_ids);
 
-  (* Do a search to verify it works *)
   let query = random_vector dim in
   let results =
     ok_exn
@@ -419,13 +402,11 @@ let test_populate_and_inspect () =
 
   Gvecdb.close db;
 
-  (* Inspect the file *)
   let hnsw_path = base_path ^ ".hnsw/embedding.hnsw.mvcc" in
   check bool "HNSW file exists" true (Sys.file_exists hnsw_path);
 
   let result = inspect_mvcc_file hnsw_path in
 
-  (* Verify structure *)
   check string "magic" magic result.sb_magic;
   check int64 "version" current_version result.sb_version;
   check bool "sb checksum valid" true result.sb_checksum_valid;
@@ -435,7 +416,6 @@ let test_populate_and_inspect () =
   check bool "entry_point valid" true (result.pt_entry_point >= 0);
   check bool "entry_point < node_count" true (result.pt_entry_point < n_vectors);
 
-  (* Verify sample nodes *)
   List.iter
     (fun (slot_id, node) ->
       check bool
@@ -464,7 +444,6 @@ let test_delete_and_inspect () =
   Printf.printf "TEST: Delete %d/%d Vectors and Inspect\n" n_delete n_vectors;
   Printf.printf "========================================\n";
 
-  (* Create and populate *)
   let db = ok_exn (Gvecdb.create db_path) in
   let vector_ids =
     with_txn db (fun txn ->
@@ -478,7 +457,6 @@ let test_delete_and_inspect () =
 
   Printf.printf "Created %d vectors\n" n_vectors;
 
-  (* Delete some vectors *)
   with_txn db (fun txn ->
       for i = 0 to n_delete - 1 do
         ok_exn (Gvecdb.delete_vector db ~txn vector_ids.(i))
@@ -488,15 +466,12 @@ let test_delete_and_inspect () =
 
   Gvecdb.close db;
 
-  (* Inspect *)
   let hnsw_path = base_path ^ ".hnsw/embedding.hnsw.mvcc" in
   let result = inspect_mvcc_file hnsw_path in
 
-  (* After deletion, node_count stays the same but nodes are marked deleted *)
   check int "node_count unchanged" n_vectors result.pt_node_count;
   check bool "epoch > 1 (multiple commits)" true (result.pt_epoch > 1L);
 
-  (* Count deleted nodes in sample *)
   let deleted_count =
     List.fold_left
       (fun acc (_, node) -> if node.n_deleted then acc + 1 else acc)
@@ -518,7 +493,6 @@ let test_persistence_and_inspect () =
   Printf.printf "TEST: Persistence Round-Trip Inspection\n";
   Printf.printf "========================================\n";
 
-  (* Phase 1: Create and close *)
   let db = ok_exn (Gvecdb.create db_path) in
   with_txn db (fun txn ->
       for _ = 0 to n_vectors - 1 do
@@ -535,13 +509,11 @@ let test_persistence_and_inspect () =
 
   Printf.printf "Phase 1: Created %d vectors and closed\n" n_vectors;
 
-  (* Inspect before reopen *)
   let hnsw_path = base_path ^ ".hnsw/embedding.hnsw.mvcc" in
   Printf.printf "\n--- Before Reopen ---\n";
   let result1 = inspect_mvcc_file hnsw_path in
   let epoch1 = result1.pt_epoch in
 
-  (* Phase 2: Reopen and add more *)
   let db = ok_exn (Gvecdb.create db_path) in
   with_txn db (fun txn ->
       for _ = 0 to 49 do
@@ -558,11 +530,9 @@ let test_persistence_and_inspect () =
 
   Printf.printf "Phase 2: Added 50 more vectors and closed\n";
 
-  (* Inspect after additions *)
   Printf.printf "\n--- After Additions ---\n";
   let result2 = inspect_mvcc_file hnsw_path in
 
-  (* Verify *)
   check bool "epoch increased" true (result2.pt_epoch > epoch1);
   check int "node count increased" (n_vectors + 50) result2.pt_node_count;
   check bool "checksums still valid" true
@@ -582,7 +552,6 @@ let test_multi_epoch_inspection () =
 
   let db = ok_exn (Gvecdb.create db_path) in
 
-  (* Do multiple separate transactions to create multiple epochs *)
   for batch = 1 to 5 do
     with_txn db (fun txn ->
         for _ = 1 to 20 do
@@ -600,16 +569,13 @@ let test_multi_epoch_inspection () =
 
   Gvecdb.close db;
 
-  (* Inspect *)
   let hnsw_path = base_path ^ ".hnsw/embedding.hnsw.mvcc" in
   let result = inspect_mvcc_file hnsw_path in
 
-  (* Should have epoch 6 (initial empty + 5 batches) *)
   Printf.printf "Final epoch: %Ld\n" result.pt_epoch;
   check bool "epoch >= 5" true (result.pt_epoch >= 5L);
   check int "total nodes" 100 result.pt_node_count;
 
-  (* Active and shadow should differ *)
   Printf.printf "Active epoch: %Ld, Shadow epoch: %Ld\n" result.pt_epoch
     result.shadow_epoch;
 
@@ -628,7 +594,6 @@ let test_large_scale_inspection () =
 
   let db = ok_exn (Gvecdb.create db_path) in
 
-  (* Create in batches *)
   for batch = 0 to 9 do
     with_txn db (fun txn ->
         for _ = 0 to 99 do
@@ -644,7 +609,6 @@ let test_large_scale_inspection () =
     Printf.printf "Batch %d: %d vectors total\n" (batch + 1) ((batch + 1) * 100)
   done;
 
-  (* Test search *)
   let query = random_vector dim in
   let results =
     ok_exn
@@ -655,22 +619,19 @@ let test_large_scale_inspection () =
 
   Gvecdb.close db;
 
-  (* Inspect *)
   let hnsw_path = base_path ^ ".hnsw/embedding.hnsw.mvcc" in
   let result = inspect_mvcc_file hnsw_path in
 
-  (* Verify structure *)
   check int "node count" n_vectors result.pt_node_count;
   check int "dimension" dim result.pt_dimension;
 
-  (* Calculate expected pages *)
-  let expected_pages = (n_vectors + nodes_per_page - 1) / nodes_per_page in
+  let layout = Gvecdb.Hnsw_page.compute_layout dim in
+  let expected_pages = (n_vectors + layout.nodes_per_page - 1) / layout.nodes_per_page in
   Printf.printf "Expected pages: %d, Actual pages: %d\n" expected_pages
     result.pt_page_count;
   check bool "page count reasonable" true
     (result.pt_page_count >= expected_pages);
 
-  (* Verify page offsets are sequential and non-overlapping *)
   let offsets_valid =
     let sorted = Array.copy result.pt_page_offsets in
     Array.sort Int64.compare sorted;
@@ -678,7 +639,7 @@ let test_large_scale_inspection () =
       if i >= Array.length sorted - 1 then true
       else
         let gap = Int64.sub sorted.(i + 1) sorted.(i) |> Int64.to_int in
-        gap >= page_size && check_gaps (i + 1)
+        gap >= layout.page_size && check_gaps (i + 1)
     in
     check_gaps 0 || Array.length sorted <= 1
   in

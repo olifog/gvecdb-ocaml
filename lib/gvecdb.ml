@@ -172,7 +172,7 @@ let reconcile_hnsw t tag_name =
             let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
             let changed = ref false in
             for slot_id = 0 to node_count - 1 do
-              match Hnsw_mvcc.read_node mvcc table ~slot_id with
+              match Hnsw_mvcc.read_node_with_vec mvcc table ~slot_id with
               | Some node
                 when (not node.deleted) && not (Hashtbl.mem lmdb_slots slot_id)
                 ->
@@ -442,35 +442,37 @@ external dist_from_mmap :
   "gvecdb_dist_from_mmap_bc" "gvecdb_dist_from_mmap"
   [@@noalloc]
 
-let make_compute_distance (vector_file : Vector_file.t) metric normalized_query
-    query_norm _vec_arr dim =
-  let mmap = vector_file.mmap in
+let make_compute_distance_hnsw mmap metric normalized_query query_norm dim =
   let metric_int = Types.metric_to_int metric in
-  fun other_offset ->
-    dist_from_mmap mmap normalized_query (Int64.to_int other_offset) query_norm
-      metric_int dim
+  fun byte_offset ->
+    dist_from_mmap mmap normalized_query byte_offset query_norm metric_int dim
 
-let compute_pairwise_distance vector_file metric offset_a offset_b =
-  match
-    ( Vector_file.read_vector_with_header vector_file offset_a,
-      Vector_file.read_vector_with_header vector_file offset_b )
-  with
-  | Ok (bs_a, hdr_a), Ok (bs_b, hdr_b) ->
-      let dim_a = hdr_a.Vector_file.dim in
-      let dim_b = hdr_b.Vector_file.dim in
-      if dim_a <> dim_b then infinity
-      else
-        let arr_a = Float32_vec.to_array bs_a in
-        let normalized_a = Array.copy arr_a in
-        let norm_a = Knn.normalize_array normalized_a in
-        if Vector_file.is_normalized hdr_b then
-          Knn.compute_distance_normalized metric normalized_a norm_a bs_b
-            hdr_b.Vector_file.norm dim_a
-        else
-          let norm_sq_a = norm_a *. norm_a in
-          Knn.compute_distance_raw metric arr_a norm_sq_a bs_b
-            hdr_b.Vector_file.norm dim_a
-  | _ -> infinity
+let make_dist_from_inline metric normalized_query query_norm dim =
+  let metric_int = Types.metric_to_int metric in
+  fun (iv : bigstring) ->
+    dist_from_mmap iv normalized_query 0 query_norm metric_int dim
+
+let build_inline_vec ~normalized (store_data : bigstring) (norm : float) =
+  let dim = Bigstringaf.length store_data / 4 in
+  let total = Vector_file.vec_header_size + dim * 4 in
+  let bs = Bigstringaf.create total in
+  Bigstringaf.set_int32_le bs 0 (Int32.of_int dim);
+  let flags = if normalized then 0x01 else 0x00 in
+  Bigstringaf.set bs 4 (Char.chr flags);
+  for i = 0 to 2 do Bigstringaf.set bs (5 + i) '\x00' done;
+  Bigstringaf.set_int64_le bs 8 (Int64.bits_of_float norm);
+  Bigstringaf.blit store_data ~src_off:0 bs ~dst_off:Vector_file.vec_header_size
+    ~len:(dim * 4);
+  bs
+
+let make_pairwise_distance_inline metric dim =
+  let metric_int = Types.metric_to_int metric in
+  let vec_data_off = Vector_file.vec_header_size in
+  fun (buf_a : bigstring) (off_a : int) (buf_b : bigstring) (off_b : int) ->
+    let normalized_a = Array.init dim (fun i ->
+        Int32.float_of_bits (Bigstringaf.get_int32_le buf_a (off_a + vec_data_off + i * 4))) in
+    let query_norm = Knn.normalize_array normalized_a in
+    dist_from_mmap buf_b normalized_a off_b query_norm metric_int dim
 
 let get_or_create_hnsw_mvcc t ?(metric = Cosine) vector_tag =
   match Hashtbl.find_opt t.hnsw_mvcc vector_tag with
@@ -504,7 +506,7 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric
       with
       | Error e -> Error (Storage_error (Vector_file.error_to_string e))
       | Ok () -> (
-          match get_or_create_hnsw_mvcc t vector_tag with
+          match get_or_create_hnsw_mvcc t ~metric vector_tag with
           | None -> Error (Storage_error "failed to create HNSW file")
           | Some mvcc -> (
               let vector_id_result =
@@ -518,18 +520,25 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric
                   let normalized_query = Array.copy vec_arr in
                   let query_norm = Knn.normalize_array normalized_query in
                   let metric = Hnsw_mvcc.get_metric mvcc in
+                  let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                   let compute_distance =
-                    make_compute_distance t.db.vector_file metric
-                      normalized_query query_norm vec_arr dim
+                    make_compute_distance_hnsw hnsw_mmap metric
+                      normalized_query query_norm dim
+                  in
+                  let dist_from_inline =
+                    make_dist_from_inline metric normalized_query query_norm dim
                   in
                   let pairwise_distance =
-                    compute_pairwise_distance t.db.vector_file metric
+                    make_pairwise_distance_inline metric dim
+                  in
+                  let inline_vec =
+                    build_inline_vec ~normalized:normalize store_data norm
                   in
 
                   let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
                   match
                     Hnsw_mvcc.insert_mvcc mvcc hnsw_txn ~vector_id
-                      ~vector_offset:file_offset ~compute_distance
+                      ~inline_vec ~compute_distance ~dist_from_inline
                       ~compute_pairwise_distance:pairwise_distance
                       ~dimension:dim
                   with
@@ -570,7 +579,6 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric
                               Lmdb.Map.set t.db.hnsw_slots ~txn slot_key
                                 (Keys.encode_hnsw_slot_value slot_id);
                               vector_id))))))
-
 let create_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
     (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
     (data : bigstring) : (vector_id, error) result =
@@ -670,7 +678,7 @@ let delete_vector_internal (t : t) ?txn (vector_id : vector_id) :
             Fun.protect
               ~finally:(fun () -> Hnsw_mvcc.end_read mvcc table)
               (fun () ->
-                match Hnsw_mvcc.read_node mvcc table ~slot_id with
+                match Hnsw_mvcc.read_node_with_vec mvcc table ~slot_id with
                 | Some node -> (
                     let deleted_node : Hnsw_page.node_data =
                       { node with deleted = true }
@@ -864,14 +872,18 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
               else begin
                 let normalized_query = Array.copy query in
                 let query_norm = Knn.normalize_array normalized_query in
+                let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                 let dist_from_offset =
-                  make_compute_distance t.db.vector_file metric normalized_query
-                    query_norm query dim
+                  make_compute_distance_hnsw hnsw_mmap metric normalized_query
+                    query_norm dim
+                in
+                let dist_from_inline =
+                  make_dist_from_inline metric normalized_query query_norm dim
                 in
 
                 let ctx =
                   Hnsw_mvcc.create_search_context mvcc table ~dist_from_offset
-                    ~overlay:None
+                    ~dist_from_inline ~overlay:None
                 in
                 let results = Hnsw_mvcc.search_mvcc ctx ~k ~ef in
 
@@ -979,7 +991,12 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
           Ok ()
         end
         else begin
-          let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
+          let batch_size = 1000 in
+          let hnsw_txn = ref (Hnsw_mvcc.begin_write mvcc) in
+          let count = ref 0 in
+          let pairwise_distance =
+            make_pairwise_distance_inline metric dim
+          in
           let result =
             List.fold_left
               (fun acc (vector_id, vector_offset) ->
@@ -991,20 +1008,26 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
                         vector_offset
                     with
                     | Error _ -> acc
-                    | Ok (vec_bs, _hdr) -> (
+                    | Ok (vec_bs, hdr) -> (
                         let vec_arr = Float32_vec.to_array vec_bs in
                         let normalized_query = Array.copy vec_arr in
                         let query_norm = Knn.normalize_array normalized_query in
+                        let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                         let compute_distance =
-                          make_compute_distance t.db.vector_file metric
-                            normalized_query query_norm vec_arr dim
+                          make_compute_distance_hnsw hnsw_mmap metric
+                            normalized_query query_norm dim
                         in
-                        let pairwise_distance =
-                          compute_pairwise_distance t.db.vector_file metric
+                        let dist_from_inline =
+                          make_dist_from_inline metric normalized_query
+                            query_norm dim
+                        in
+                        let normalized = Vector_file.is_normalized hdr in
+                        let inline_vec =
+                          build_inline_vec ~normalized vec_bs hdr.Vector_file.norm
                         in
                         match
-                          Hnsw_mvcc.insert_mvcc mvcc hnsw_txn ~vector_id
-                            ~vector_offset ~compute_distance
+                          Hnsw_mvcc.insert_mvcc mvcc !hnsw_txn ~vector_id
+                            ~inline_vec ~compute_distance ~dist_from_inline
                             ~compute_pairwise_distance:pairwise_distance
                             ~dimension:dim
                         with
@@ -1014,7 +1037,6 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
                         | Error e ->
                             Error (Storage_error (Hnsw_mvcc.error_to_string e))
                         | Ok slot_id ->
-                            (* Store slot mapping in LMDB *)
                             (match tag_id_opt with
                             | Some tag_id ->
                                 let slot_key =
@@ -1023,16 +1045,28 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
                                 Lmdb.Map.set t.db.hnsw_slots ?txn slot_key
                                   (Keys.encode_hnsw_slot_value slot_id)
                             | None -> ());
-                            Ok ())))
+                            incr count;
+                            if !count mod batch_size = 0 then begin
+                              match Hnsw_mvcc.commit mvcc !hnsw_txn with
+                              | Error e ->
+                                  Error (Storage_error (Hnsw_mvcc.error_to_string e))
+                              | Ok () ->
+                                  hnsw_txn := Hnsw_mvcc.begin_write mvcc;
+                                  Ok ()
+                            end else
+                              Ok ())))
               (Ok ()) vectors
           in
           match result with
           | Error _ ->
-              Hnsw_mvcc.rollback mvcc hnsw_txn;
+              Hnsw_mvcc.rollback mvcc !hnsw_txn;
+              Hnsw_mvcc.close mvcc;
               result
           | Ok () -> (
-              match Hnsw_mvcc.commit mvcc hnsw_txn with
-              | Error e -> Error (Storage_error (Hnsw_mvcc.error_to_string e))
+              match Hnsw_mvcc.commit mvcc !hnsw_txn with
+              | Error e ->
+                  Hnsw_mvcc.close mvcc;
+                  Error (Storage_error (Hnsw_mvcc.error_to_string e))
               | Ok () ->
                   (* store HNSW epoch for crash consistency *)
                   set_lmdb_hnsw_epoch t.db ?txn vector_tag
