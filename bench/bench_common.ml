@@ -1,50 +1,88 @@
-(** Shared benchmark infrastructure *)
+external clock_monotonic_ns : unit -> float = "bench_clock_monotonic_ns"
 
-(** {1 Timing} *)
+let clock_us () = clock_monotonic_ns () /. 1e3
 
 let time_us f =
-  let t0 = Unix.gettimeofday () in
+  let t0 = clock_us () in
   let result = f () in
-  let t1 = Unix.gettimeofday () in
-  (result, (t1 -. t0) *. 1_000_000.0)
+  let t1 = clock_us () in
+  (result, t1 -. t0)
 
-let benchmark_n n f =
-  Array.init n (fun _ -> snd (time_us f))
+let warmup ?(min_us = 500_000.0) ?(min_iters = 10) f =
+  let t0 = clock_us () in
+  let i = ref 0 in
+  while !i < min_iters || clock_us () -. t0 < min_us do
+    ignore (f ());
+    incr i
+  done;
+  !i
+
+let with_suppressed_gc f =
+  Gc.compact ();
+  let old = Gc.get () in
+  Gc.set { old with
+    minor_heap_size = 4_194_304;
+    space_overhead = 1_000_000;
+  };
+  Fun.protect ~finally:(fun () -> Gc.set old) f
 
 (** {1 Statistics} *)
 
 type stats = {
   mean_us : float;
+  stddev_us : float;
   p50_us : float;
   p95_us : float;
   p99_us : float;
+  min_us : float;
+  max_us : float;
   qps : float;
   count : int;
 }
 
+let percentile sorted n p =
+  if n = 1 then sorted.(0)
+  else
+    let idx = (float (n - 1)) *. p in
+    let lo = int_of_float (floor idx) in
+    let hi = min (n - 1) (lo + 1) in
+    let frac = idx -. float lo in
+    sorted.(lo) *. (1.0 -. frac) +. sorted.(hi) *. frac
+
 let compute_stats latencies =
   let n = Array.length latencies in
-  if n = 0 then { mean_us = 0.0; p50_us = 0.0; p95_us = 0.0; p99_us = 0.0; qps = 0.0; count = 0 }
+  if n = 0 then
+    { mean_us = 0.0; stddev_us = 0.0; p50_us = 0.0; p95_us = 0.0;
+      p99_us = 0.0; min_us = 0.0; max_us = 0.0; qps = 0.0; count = 0 }
   else
     let sorted = Array.copy latencies in
     Array.sort Float.compare sorted;
     let total = Array.fold_left ( +. ) 0.0 sorted in
-    let idx p = min (n - 1) (int_of_float (float (n - 1) *. p)) in
+    let mean = total /. float n in
+    let sum_sq = Array.fold_left (fun acc x ->
+      let d = x -. mean in acc +. d *. d) 0.0 sorted in
+    let stddev = if n > 1 then sqrt (sum_sq /. float (n - 1)) else 0.0 in
     {
-      mean_us = total /. float n;
-      p50_us = sorted.(idx 0.50);
-      p95_us = sorted.(idx 0.95);
-      p99_us = sorted.(idx 0.99);
-      qps = float n /. (total /. 1_000_000.0);
+      mean_us = mean;
+      stddev_us = stddev;
+      p50_us = percentile sorted n 0.50;
+      p95_us = percentile sorted n 0.95;
+      p99_us = percentile sorted n 0.99;
+      min_us = sorted.(0);
+      max_us = sorted.(n - 1);
+      qps = if total > 0.0 then float n /. (total /. 1_000_000.0) else 0.0;
       count = n;
     }
 
 let stats_to_json s : Yojson.Basic.t =
   `Assoc [
     ("mean_latency_us", `Float s.mean_us);
+    ("stddev_us", `Float s.stddev_us);
     ("p50_latency_us", `Float s.p50_us);
     ("p95_latency_us", `Float s.p95_us);
     ("p99_latency_us", `Float s.p99_us);
+    ("min_latency_us", `Float s.min_us);
+    ("max_latency_us", `Float s.max_us);
     ("qps", `Float s.qps);
     ("count", `Int s.count);
   ]
@@ -81,6 +119,92 @@ let floats_to_bigstring (arr : float array) =
     Bigstringaf.set_int32_le bs (i * 4) (Int32.bits_of_float arr.(i))
   done;
   bs
+
+(** {1 Dataset loading}
+
+    Binary format (.fbin): int32_le n, int32_le dim, n*dim float32_le.
+    Ground truth (.ibin): int32_le n_queries, int32_le k, n_queries*k int32_le. *)
+
+let load_fbin path =
+  let ic = open_in_bin path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    let buf4 = Bytes.create 4 in
+    let read_int32 () =
+      really_input ic buf4 0 4;
+      Int32.to_int (Bytes.get_int32_le buf4 0)
+    in
+    let n = read_int32 () in
+    let dim = read_int32 () in
+    let row_buf = Bytes.create (dim * 4) in
+    let vectors = Array.init n (fun _ ->
+      really_input ic row_buf 0 (dim * 4);
+      Array.init dim (fun j ->
+        Int32.float_of_bits (Bytes.get_int32_le row_buf (j * 4)))
+    ) in
+    (vectors, dim))
+
+let load_ibin path =
+  let ic = open_in_bin path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    let buf4 = Bytes.create 4 in
+    let read_int32 () =
+      really_input ic buf4 0 4;
+      Int32.to_int (Bytes.get_int32_le buf4 0)
+    in
+    let n = read_int32 () in
+    let k = read_int32 () in
+    let row_buf = Bytes.create (k * 4) in
+    let gt = Array.init n (fun _ ->
+      really_input ic row_buf 0 (k * 4);
+      Array.init k (fun j ->
+        Int32.to_int (Bytes.get_int32_le row_buf (j * 4)))
+    ) in
+    (gt, k))
+
+(** {1 Memory measurement} *)
+
+let parse_proc_status_field name =
+  try
+    let ic = open_in "/proc/self/status" in
+    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      let prefix = name ^ ":" in
+      let plen = String.length prefix in
+      let result = ref 0 in
+      (try while true do
+        let line = input_line ic in
+        if String.length line > plen
+           && String.sub line 0 plen = prefix then begin
+          let s = String.trim (String.sub line plen (String.length line - plen)) in
+          (match String.split_on_char ' ' s with
+           | num :: _ -> result := int_of_string (String.trim num)
+           | _ -> ());
+          raise Exit
+        end
+      done with Exit | End_of_file -> ());
+      !result)
+  with _ -> 0
+
+let get_rss_kb () = parse_proc_status_field "VmRSS"
+let get_peak_rss_kb () = parse_proc_status_field "VmPeak"
+
+(** {1 System metadata} *)
+
+let system_metadata () : Yojson.Basic.t =
+  let read_first_line cmd =
+    try
+      let ic = Unix.open_process_in cmd in
+      Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+        (fun () -> try input_line ic with End_of_file -> "unknown")
+    with _ -> "unknown"
+  in
+  `Assoc [
+    ("ocaml_version", `String Sys.ocaml_version);
+    ("os", `String (read_first_line "uname -s -r"));
+    ("cpu", `String (read_first_line
+      "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs"));
+    ("hostname", `String (read_first_line "hostname"));
+    ("word_size", `Int Sys.int_size);
+  ]
 
 (** {1 Database lifecycle} *)
 
@@ -171,6 +295,10 @@ let get_string_arg name default =
     String.sub arg plen (String.length arg - plen)
   with Not_found -> default
 
+let has_flag name =
+  let flag = "--" ^ name in
+  Array.exists (fun s -> s = flag) Sys.argv
+
 let ensure_output_dir dir =
   (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
@@ -189,11 +317,11 @@ let metric_to_string = function
   | Gvecdb.Cosine -> "cosine"
   | Gvecdb.DotProduct -> "dot_product"
 
-let hnsw_params_to_json () : Yojson.Basic.t =
-  let p = Gvecdb.Hnsw.default_params in
+let hnsw_params_to_json (p : Gvecdb.Hnsw.params) : Yojson.Basic.t =
   `Assoc [
     ("m", `Int p.m);
     ("m_max", `Int p.m_max);
     ("ef_construction", `Int p.ef_construction);
     ("max_layers", `Int p.max_layers);
+    ("ml", `Float p.ml);
   ]

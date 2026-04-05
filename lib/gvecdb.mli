@@ -176,14 +176,15 @@ val get_edge_props :
 
 (** create vector on a node or edge. [~normalize:true] (default) stores
     unit-length vectors for fast cosine similarity with original magnitude
-    preserved in metadata. [~metric] sets the HNSW index metric when the
-    index is first created for this vector tag (default [Cosine]). ignored
-    if an index already exists for the tag. requires explicit transaction *)
+    preserved in metadata. [~metric] and [~hnsw_params] apply only when
+    the HNSW index is first created for this vector tag. requires explicit
+    transaction *)
 val create_vector :
   t ->
   txn:[> `Read | `Write ] txn ->
   ?normalize:bool ->
   ?metric:distance_metric ->
+  ?hnsw_params:Hnsw.params ->
   owner_kind ->
   id ->
   string ->
@@ -246,9 +247,11 @@ val knn_hnsw :
   float array ->
   (knn_result list, error) result
 
-(** rebuild HNSW index for a tag from scratch using all vectors with that tag *)
+  (** rebuild HNSW index for a tag from scratch using all vectors with that tag.
+      requires a write transaction because it updates the hnsw_slots mapping. *)
 val rebuild_hnsw_index :
-  t -> ?txn:rw_txn -> vector_tag:string -> unit -> (unit, error) result
+  t -> ?txn:rw_txn -> ?hnsw_params:Hnsw.params ->
+  vector_tag:string -> unit -> (unit, error) result
 
 (** {1 dynamic property access} *)
 

@@ -32,19 +32,19 @@ let bench_batched ~vectors ~dim ~batch_size =
   with_bench_db "insert_batch" @@ fun db path ->
   let results = ref [] in
   let i = ref 0 in
-  let total_t0 = Unix.gettimeofday () in
+  let total_t0 = clock_us () in
   while !i < n do
     let batch_end = min n (!i + batch_size) in
     let count = batch_end - !i in
-    let t0 = Unix.gettimeofday () in
+    let t0 = clock_us () in
     with_txn db (fun txn ->
       for j = !i to batch_end - 1 do
         let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
         ignore (ok_exn (Gvecdb.create_vector db ~txn Node node "v"
           (floats_to_bigstring vectors.(j))));
       done);
-    let t1 = Unix.gettimeofday () in
-    let batch_time = t1 -. t0 in
+    let t1 = clock_us () in
+    let batch_time = (t1 -. t0) /. 1e6 in
     results := {
       cumulative = batch_end;
       batch_size = count;
@@ -54,7 +54,7 @@ let bench_batched ~vectors ~dim ~batch_size =
     progress ~label:"batched insert" ~i:(!i) ~n;
     i := batch_end
   done;
-  let total_time = Unix.gettimeofday () -. total_t0 in
+  let total_time = (clock_us () -. total_t0) /. 1e6 in
   let index_size = get_db_size_bytes path in
   (List.rev !results, total_time, index_size)
 
@@ -109,7 +109,7 @@ let () =
       ("dim", `Int dim);
       ("batch_size", `Int batch_size);
       ("seed", `Int seed);
-      ("hnsw_params", hnsw_params_to_json ());
+      ("hnsw_params", hnsw_params_to_json Gvecdb.Hnsw.default_params);
     ]);
     ("batched", `Assoc [
       ("total_time_s", `Float total_time);

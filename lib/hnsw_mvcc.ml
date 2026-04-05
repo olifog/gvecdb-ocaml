@@ -574,10 +574,11 @@ let rec take_n n acc = function
   | x :: rest -> take_n (n - 1) (x :: acc) rest
 
 (* Beam search on MVCC snapshot - single layer *)
-let search_layer_mvcc ctx ~entry_points ~ef ~layer =
-  let visited = Hashtbl.create (ef * 2) in
-  let candidates = Heap.create Heap.Min in
-  let results = Topk.create ef in
+let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
+  let n_slots = max visited_size ctx.table.node_count in
+  let visited = Bitset.create (n_slots + 1) in
+  let candidates = Int_heap.create Int_heap.Min in
+  let results = Int_topk.create ef in
   let mmap = ctx.mvcc.mmap in
   let table = ctx.table in
   let overlay = ctx.overlay in
@@ -622,33 +623,31 @@ let search_layer_mvcc ctx ~entry_points ~ef ~layer =
   (* Initialize with entry points *)
   List.iter
     (fun ep ->
-      if not (Hashtbl.mem visited ep) then begin
-        Hashtbl.add visited ep ();
+      if not (Bitset.test_and_set visited ep) then begin
         let dist = slot_dist ep in
         if Float.is_finite dist then begin
-          Heap.push candidates dist ep;
-          Topk.insert results dist ep
+          Int_heap.push candidates dist ep;
+          Int_topk.insert results dist ep
         end
       end)
     entry_points;
 
   (* Expand candidates *)
   let rec expand () =
-    match Heap.pop candidates with
+    match Int_heap.pop candidates with
     | None -> ()
     | Some (c_dist, c_slot) ->
-        let worst = Topk.worst_dist results in
-        if c_dist > worst && Topk.is_full results then ()
+        let worst = Int_topk.worst_dist results in
+        if c_dist > worst && Int_topk.is_full results then ()
         else begin
           let process_neighbor n =
-            if not (Hashtbl.mem visited n) then begin
-              Hashtbl.add visited n ();
+            if not (Bitset.test_and_set visited n) then begin
               let n_dist = slot_dist n in
               if Float.is_finite n_dist then begin
-                let worst' = Topk.worst_dist results in
-                if n_dist < worst' || not (Topk.is_full results) then begin
-                  Heap.push candidates n_dist n;
-                  Topk.insert results n_dist n
+                let worst' = Int_topk.worst_dist results in
+                if n_dist < worst' || not (Int_topk.is_full results) then begin
+                  Int_heap.push candidates n_dist n;
+                  Int_topk.insert results n_dist n
                 end
               end
             end
@@ -679,7 +678,7 @@ let search_layer_mvcc ctx ~entry_points ~ef ~layer =
         end
   in
   expand ();
-  Topk.to_sorted_list results |> List.map (fun (dist, slot) -> (slot, dist))
+  Int_topk.to_sorted_list results |> List.map (fun (dist, slot) -> (slot, dist))
 
 (* Full HNSW search on MVCC snapshot *)
 let search_mvcc ctx ~k ~ef =
@@ -796,8 +795,9 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
           let ep = ref [ txn.new_entry_point ] in
           let current_max = txn.new_max_level in
 
+          let vs = txn.new_node_count in
           for layer = current_max downto level + 1 do
-            match search_layer_mvcc ctx ~entry_points:!ep ~ef:1 ~layer with
+            match search_layer_mvcc ~visited_size:vs ctx ~entry_points:!ep ~ef:1 ~layer with
             | [] -> ()
             | results -> ep := List.map fst results
           done;
@@ -805,15 +805,16 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
           let vec_location slot =
             match Hashtbl.find_opt overlay slot with
             | Some node -> (
-                let page_id = Hnsw_page.slot_to_page layout slot in
-                if page_id < txn.base_table.page_count then
-                  let fo = Int64.to_int txn.base_table.offsets.(page_id)
-                           + Hnsw_page.slot_offset_in_page layout slot in
-                  Some (t.mmap, fo + Hnsw_page.node_vec_header_off)
-                else
-                  (match node.Hnsw_page.inline_vec with
-                  | Some iv -> Some (iv, 0)
-                  | None -> None))
+                match node.Hnsw_page.inline_vec with
+                | Some iv -> Some (iv, 0)
+                | None ->
+                    (* promoted committed node — no inline_vec, read from mmap *)
+                    let page_id = Hnsw_page.slot_to_page layout slot in
+                    if page_id < txn.base_table.page_count then
+                      let fo = Int64.to_int txn.base_table.offsets.(page_id)
+                               + Hnsw_page.slot_offset_in_page layout slot in
+                      Some (t.mmap, fo + Hnsw_page.node_vec_header_off)
+                    else None)
             | None ->
                 let page_id = Hnsw_page.slot_to_page layout slot in
                 if slot < txn.base_table.node_count && page_id < txn.base_table.page_count then
@@ -833,8 +834,8 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
           for layer = min level current_max downto 0 do
             let m = if layer = 0 then 2 * params.m else params.m_max in
             let candidates =
-              search_layer_mvcc ctx ~entry_points:!ep ~ef:params.ef_construction
-                ~layer
+              search_layer_mvcc ~visited_size:vs ctx ~entry_points:!ep
+                ~ef:params.ef_construction ~layer
             in
             let selected = select_neighbors candidates m ~pairwise_dist in
 

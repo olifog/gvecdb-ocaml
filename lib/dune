@@ -18,8 +18,9 @@
   props_capnp
   msync
   float32_vec
-  heap
-  topk
+  bitset
+  int_heap
+  int_topk
   vector_file
   knn
   hnsw

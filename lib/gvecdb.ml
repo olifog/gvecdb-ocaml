@@ -431,26 +431,26 @@ let get_inbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters ()
   | Some f when f <> [] -> filter_edges_with_predicates t ?txn edges f
   | _ -> Ok edges
 
-external dist_from_mmap :
+external dist_from_mmap_f32 :
   Common.bigstring ->
-  float array ->
+  Common.bigstring ->
   (int [@untagged]) ->
   (float [@unboxed]) ->
   (int [@untagged]) ->
   (int [@untagged]) ->
   (float [@unboxed]) =
-  "gvecdb_dist_from_mmap_bc" "gvecdb_dist_from_mmap"
+  "gvecdb_dist_from_mmap_f32_bc" "gvecdb_dist_from_mmap_f32"
   [@@noalloc]
 
-let make_compute_distance_hnsw mmap metric normalized_query query_norm dim =
+let make_compute_distance_hnsw mmap metric query_f32 query_norm dim =
   let metric_int = Types.metric_to_int metric in
   fun byte_offset ->
-    dist_from_mmap mmap normalized_query byte_offset query_norm metric_int dim
+    dist_from_mmap_f32 mmap query_f32 byte_offset query_norm metric_int dim
 
-let make_dist_from_inline metric normalized_query query_norm dim =
+let make_dist_from_inline metric query_f32 query_norm dim =
   let metric_int = Types.metric_to_int metric in
   fun (iv : bigstring) ->
-    dist_from_mmap iv normalized_query 0 query_norm metric_int dim
+    dist_from_mmap_f32 iv query_f32 0 query_norm metric_int dim
 
 let build_inline_vec ~normalized (store_data : bigstring) (norm : float) =
   let dim = Bigstringaf.length store_data / 4 in
@@ -469,25 +469,26 @@ let make_pairwise_distance_inline metric dim =
   let metric_int = Types.metric_to_int metric in
   let vec_data_off = Vector_file.vec_header_size in
   fun (buf_a : bigstring) (off_a : int) (buf_b : bigstring) (off_b : int) ->
-    let normalized_a = Array.init dim (fun i ->
-        Int32.float_of_bits (Bigstringaf.get_int32_le buf_a (off_a + vec_data_off + i * 4))) in
-    let query_norm = Knn.normalize_array normalized_a in
-    dist_from_mmap buf_b normalized_a off_b query_norm metric_int dim
+    let data_len = dim * 4 in
+    let query_f32 = Bigstringaf.sub buf_a ~off:(off_a + vec_data_off) ~len:data_len in
+    let query_norm = Int64.float_of_bits (Bigstringaf.get_int64_le buf_a (off_a + 8)) in
+    dist_from_mmap_f32 buf_b query_f32 off_b query_norm metric_int dim
 
-let get_or_create_hnsw_mvcc t ?(metric = Cosine) vector_tag =
+let get_or_create_hnsw_mvcc t ?(metric = Cosine)
+    ?(hnsw_params = Hnsw.default_params) vector_tag =
   match Hashtbl.find_opt t.hnsw_mvcc vector_tag with
   | Some f -> Some f
   | None -> (
       let file_path = Store.hnsw_file_path t.db_path vector_tag ^ ".mvcc" in
       match
-        Hnsw_mvcc.create file_path ~metric ~params:Hnsw.default_params ()
+        Hnsw_mvcc.create file_path ~metric ~params:hnsw_params ()
       with
       | Error _ -> None
       | Ok f ->
           Hashtbl.replace t.hnsw_mvcc vector_tag f;
           Some f)
 
-let create_vector_internal (t : t) ~txn ~normalize ~metric
+let create_vector_internal (t : t) ~txn ~normalize ~metric ?hnsw_params
     (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
     (data : bigstring) :
     (vector_id, error) result =
@@ -506,7 +507,7 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric
       with
       | Error e -> Error (Storage_error (Vector_file.error_to_string e))
       | Ok () -> (
-          match get_or_create_hnsw_mvcc t ~metric vector_tag with
+          match get_or_create_hnsw_mvcc t ~metric ?hnsw_params vector_tag with
           | None -> Error (Storage_error "failed to create HNSW file")
           | Some mvcc -> (
               let vector_id_result =
@@ -516,17 +517,26 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric
               match vector_id_result with
               | Error e -> Error e
               | Ok vector_id -> (
-                  let vec_arr = Float32_vec.to_array store_data in
-                  let normalized_query = Array.copy vec_arr in
-                  let query_norm = Knn.normalize_array normalized_query in
+                  (* distance functions expect a normalised f32 vector and
+                     the original pre-normalisation magnitude *)
+                  let query_f32 =
+                    if normalize then store_data
+                    else begin
+                      let arr = Float32_vec.to_array store_data in
+                      let tmp = Array.copy arr in
+                      ignore (Knn.normalize_array tmp);
+                      Float32_vec.of_array tmp
+                    end
+                  in
+                  let query_norm = norm in
                   let metric = Hnsw_mvcc.get_metric mvcc in
                   let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                   let compute_distance =
                     make_compute_distance_hnsw hnsw_mmap metric
-                      normalized_query query_norm dim
+                      query_f32 query_norm dim
                   in
                   let dist_from_inline =
-                    make_dist_from_inline metric normalized_query query_norm dim
+                    make_dist_from_inline metric query_f32 query_norm dim
                   in
                   let pairwise_distance =
                     make_pairwise_distance_inline metric dim
@@ -580,6 +590,7 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric
                                 (Keys.encode_hnsw_slot_value slot_id);
                               vector_id))))))
 let create_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
+    ?hnsw_params
     (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
     (data : bigstring) : (vector_id, error) result =
   let* exists =
@@ -592,8 +603,8 @@ let create_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
     | Node -> Error (Node_not_found owner_id)
     | Edge -> Error (Edge_not_found owner_id)
   else
-    create_vector_internal t ~txn ~normalize ~metric owner_kind owner_id
-      vector_tag data
+    create_vector_internal t ~txn ~normalize ~metric ?hnsw_params owner_kind
+      owner_id vector_tag data
 
 let vector_exists (t : t) ?txn (vector_id : vector_id) : (bool, error) result =
   try
@@ -872,13 +883,14 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
               else begin
                 let normalized_query = Array.copy query in
                 let query_norm = Knn.normalize_array normalized_query in
+                let query_f32 = Float32_vec.of_array normalized_query in
                 let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                 let dist_from_offset =
-                  make_compute_distance_hnsw hnsw_mmap metric normalized_query
+                  make_compute_distance_hnsw hnsw_mmap metric query_f32
                     query_norm dim
                 in
                 let dist_from_inline =
-                  make_dist_from_inline metric normalized_query query_norm dim
+                  make_dist_from_inline metric query_f32 query_norm dim
                 in
 
                 let ctx =
@@ -911,7 +923,8 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
               end
             end)
 
-let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
+let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
+    ?(hnsw_params = Hnsw.default_params) ~vector_tag () =
   let tag_id_opt = Store.lookup_intern t.db ?txn vector_tag in
   let get_all_vectors () =
     match tag_id_opt with
@@ -967,7 +980,8 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
   (match tag_id_opt with
   | Some tag_id -> clear_slot_mappings tag_id
   | None -> ());
-  match Hnsw_mvcc.create file_path ~metric ~params:Hnsw.default_params with
+  (* create fresh MVCC file *)
+  match Hnsw_mvcc.create file_path ~metric ~params:hnsw_params () with
   | Error e -> Error (Storage_error (Hnsw_mvcc.error_to_string e))
   | Ok mvcc ->
       let vectors = get_all_vectors () in
@@ -1009,16 +1023,23 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option) ~vector_tag () =
                     with
                     | Error _ -> acc
                     | Ok (vec_bs, hdr) -> (
-                        let vec_arr = Float32_vec.to_array vec_bs in
-                        let normalized_query = Array.copy vec_arr in
-                        let query_norm = Knn.normalize_array normalized_query in
+                        let query_f32 =
+                          if Vector_file.is_normalized hdr then vec_bs
+                          else begin
+                            let arr = Float32_vec.to_array vec_bs in
+                            let tmp = Array.copy arr in
+                            ignore (Knn.normalize_array tmp);
+                            Float32_vec.of_array tmp
+                          end
+                        in
+                        let query_norm = hdr.Vector_file.norm in
                         let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                         let compute_distance =
                           make_compute_distance_hnsw hnsw_mmap metric
-                            normalized_query query_norm dim
+                            query_f32 query_norm dim
                         in
                         let dist_from_inline =
-                          make_dist_from_inline metric normalized_query
+                          make_dist_from_inline metric query_f32
                             query_norm dim
                         in
                         let normalized = Vector_file.is_normalized hdr in

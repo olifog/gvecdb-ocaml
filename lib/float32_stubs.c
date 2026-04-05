@@ -133,3 +133,117 @@ CAMLprim value gvecdb_dist_from_mmap_bc(value *argv, int argn) {
                               Int_val(argv[4]), Int_val(argv[5]))
     );
 }
+
+static inline double dot_f32_f32(const float *src, const float *query,
+                                 intnat dim) {
+    float sum = 0.0f;
+    intnat i = 0;
+
+#if defined(__AVX__)
+    {
+        __m256 acc0 = _mm256_setzero_ps();
+        __m256 acc1 = _mm256_setzero_ps();
+
+        for (; i + 15 < dim; i += 16) {
+            __m256 s0 = _mm256_loadu_ps(src + i);
+            __m256 s1 = _mm256_loadu_ps(src + i + 8);
+            __m256 q0 = _mm256_loadu_ps(query + i);
+            __m256 q1 = _mm256_loadu_ps(query + i + 8);
+#if defined(__FMA__)
+            acc0 = _mm256_fmadd_ps(s0, q0, acc0);
+            acc1 = _mm256_fmadd_ps(s1, q1, acc1);
+#else
+            acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(s0, q0));
+            acc1 = _mm256_add_ps(acc1, _mm256_mul_ps(s1, q1));
+#endif
+        }
+
+        for (; i + 7 < dim; i += 8) {
+            __m256 s0 = _mm256_loadu_ps(src + i);
+            __m256 q0 = _mm256_loadu_ps(query + i);
+#if defined(__FMA__)
+            acc0 = _mm256_fmadd_ps(s0, q0, acc0);
+#else
+            acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(s0, q0));
+#endif
+        }
+
+        acc0 = _mm256_add_ps(acc0, acc1);
+        /* horizontal sum of 8 floats */
+        __m128 lo = _mm256_castps256_ps128(acc0);
+        __m128 hi = _mm256_extractf128_ps(acc0, 1);
+        lo = _mm_add_ps(lo, hi);
+        lo = _mm_hadd_ps(lo, lo);
+        lo = _mm_hadd_ps(lo, lo);
+        _mm_store_ss(&sum, lo);
+    }
+#elif defined(__SSE2__)
+    {
+        __m128 acc0 = _mm_setzero_ps();
+        __m128 acc1 = _mm_setzero_ps();
+
+        for (; i + 7 < dim; i += 8) {
+            __m128 s0 = _mm_loadu_ps(src + i);
+            __m128 s1 = _mm_loadu_ps(src + i + 4);
+            __m128 q0 = _mm_loadu_ps(query + i);
+            __m128 q1 = _mm_loadu_ps(query + i + 4);
+            acc0 = _mm_add_ps(acc0, _mm_mul_ps(s0, q0));
+            acc1 = _mm_add_ps(acc1, _mm_mul_ps(s1, q1));
+        }
+
+        acc0 = _mm_add_ps(acc0, acc1);
+        /* horizontal sum of 4 floats */
+        __m128 shuf = _mm_movehdup_ps(acc0);
+        acc0 = _mm_add_ps(acc0, shuf);
+        shuf = _mm_movehl_ps(shuf, acc0);
+        acc0 = _mm_add_ss(acc0, shuf);
+        _mm_store_ss(&sum, acc0);
+    }
+#endif
+
+    for (; i < dim; i++) {
+        sum += src[i] * query[i];
+    }
+
+    return (double)sum;
+}
+
+double gvecdb_dist_from_mmap_f32(value v_mmap, value v_query_f32,
+                                  intnat byte_offset, double query_norm,
+                                  intnat metric, intnat dim) {
+    const char *base = (const char *)Caml_ba_data_val(v_mmap);
+    const char *hdr = base + byte_offset;
+
+    double vec_norm;
+    memcpy(&vec_norm, hdr + 8, sizeof(double));
+
+    const float *src = (const float *)(hdr + 16);
+    const float *query = (const float *)Caml_ba_data_val(v_query_f32);
+
+    double norm_dot = dot_f32_f32(src, query, dim);
+
+    switch (metric) {
+        case 1: /* cosine: 1 - dot(normalized_query, normalized_vec) */
+            return 1.0 - norm_dot;
+        case 0: { /* euclidean: ||a||^2 + ||b||^2 - 2*||a||*||b||*dot */
+            double dot = query_norm * vec_norm * norm_dot;
+            double qn2 = query_norm * query_norm;
+            double vn2 = vec_norm * vec_norm;
+            double d = qn2 + vn2 - 2.0 * dot;
+            return d > 0.0 ? d : 0.0;
+        }
+        case 2: /* dotproduct: -(||a||*||b||*dot) */
+            return -(query_norm * vec_norm * norm_dot);
+        default:
+            return 1.0 / 0.0; /* infinity */
+    }
+}
+
+CAMLprim value gvecdb_dist_from_mmap_f32_bc(value *argv, int argn) {
+    (void)argn;
+    return caml_copy_double(
+        gvecdb_dist_from_mmap_f32(argv[0], argv[1],
+                                   Int_val(argv[2]), Double_val(argv[3]),
+                                   Int_val(argv[4]), Int_val(argv[5]))
+    );
+}

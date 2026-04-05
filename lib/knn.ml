@@ -61,7 +61,8 @@ let brute_force (db : t) ?txn ~(metric : distance_metric) ~(k : int)
     let dim = Array.length query in
     let txn_ro = Option.map (fun t -> (t :> [ `Read ] Lmdb.Txn.t)) txn in
     try
-      let heap = Topk.create k in
+      let topk = Int_topk.create k in
+      let meta = Hashtbl.create (k * 2) in
       Lmdb.Cursor.go Lmdb.Ro ?txn:txn_ro db.vector_owners (fun cursor ->
           let process key value =
             let vid = Keys.decode_id_bs key in
@@ -74,10 +75,10 @@ let brute_force (db : t) ?txn ~(metric : distance_metric) ~(k : int)
                 let vec_norm = header.Vector_file.norm in
                 let is_normalized = Vector_file.is_normalized header in
                 if
-                  (not (Topk.is_full heap))
+                  (not (Int_topk.is_full topk))
                   || not
                        (should_skip_by_norm metric query_norm vec_norm
-                          (Topk.worst_dist heap))
+                          (Int_topk.worst_dist topk))
                 then
                   let dist =
                     if is_normalized then
@@ -88,7 +89,13 @@ let brute_force (db : t) ?txn ~(metric : distance_metric) ~(k : int)
                         vec_norm dim
                   in
                   if Float.is_finite dist then
-                    Topk.insert heap dist (vid, owner_kind, owner_id, tag_id)
+                    if not (Int_topk.is_full topk)
+                       || dist < Int_topk.worst_dist topk
+                    then begin
+                      let vid_int = Int64.to_int vid in
+                      Int_topk.insert topk dist vid_int;
+                      Hashtbl.replace meta vid_int (vid, owner_kind, owner_id, tag_id)
+                    end
           in
           let rec scan () =
             match Lmdb.Cursor.next cursor with
@@ -103,20 +110,23 @@ let brute_force (db : t) ?txn ~(metric : distance_metric) ~(k : int)
               scan ()
           | exception Lmdb.Not_found -> ());
       let results =
-        Topk.to_sorted_list heap
-        |> List.filter_map (fun (dist, (vid, ok, oid, tid)) ->
-            try
-              let tag = Store.unintern db ?txn tid in
-              Some
-                ({
-                   vector_id = vid;
-                   owner_kind = ok;
-                   owner_id = oid;
-                   vector_tag = tag;
-                   distance = dist;
-                 }
-                  : knn_result)
-            with Not_found | Lmdb.Not_found -> None)
+        Int_topk.to_sorted_list topk
+        |> List.filter_map (fun (dist, vid_int) ->
+            match Hashtbl.find_opt meta vid_int with
+            | None -> None
+            | Some (vid, ok, oid, tid) ->
+                try
+                  let tag = Store.unintern db ?txn tid in
+                  Some
+                    ({
+                       vector_id = vid;
+                       owner_kind = ok;
+                       owner_id = oid;
+                       vector_tag = tag;
+                       distance = dist;
+                     }
+                      : knn_result)
+                with Not_found | Lmdb.Not_found -> None)
       in
       Ok results
     with

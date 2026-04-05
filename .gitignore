@@ -4,3 +4,7 @@ _coverage/
 *.coverage
 .clangd
 bench_results/
+perf.data*
+*.prof
+callgrind*
+datasets/

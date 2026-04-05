@@ -1,6 +1,7 @@
 (library
  (name bench_common)
  (modules bench_common)
+ (foreign_stubs (language c) (names bench_stubs))
  (libraries gvecdb yojson bigstringaf unix))
 
 (executable
@@ -22,3 +23,8 @@
  (name bench_props)
  (modules bench_props)
  (libraries bench_common gvecdb yojson test_schemas capnp bigstringaf stdint unix))
+
+(executable
+ (name bench_perf)
+ (modules bench_perf)
+ (libraries bench_common gvecdb bigstringaf unix))
