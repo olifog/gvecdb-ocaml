@@ -99,9 +99,6 @@ type t = {
   rng : Random.State.t;
 }
 
-let metric_to_int = Types.metric_to_int
-let metric_of_int = Types.metric_of_int
-
 let create_mmap fd size =
   Bigarray.(array1_of_genarray (Unix.map_file fd Char C_layout true [| size |]))
 
@@ -126,7 +123,7 @@ let read_page_table mmap which =
       Bigstringaf.get_int32_le mmap (base + pt_dimension_off) |> Int32.to_int;
     metric =
       Bigstringaf.get_int32_le mmap (base + pt_metric_off)
-      |> Int32.to_int |> metric_of_int;
+      |> Int32.to_int |> Types.metric_of_int;
     offsets =
       Array.init page_count (fun i ->
           Bigstringaf.get_int64_le mmap (base + pt_offsets_off + (i * 8)));
@@ -149,7 +146,7 @@ let write_page_table mmap which pt =
   Bigstringaf.set_int32_le mmap (base + pt_dimension_off)
     (Int32.of_int pt.dimension);
   Bigstringaf.set_int32_le mmap (base + pt_metric_off)
-    (Int32.of_int (metric_to_int pt.metric));
+    (Int32.of_int (Types.metric_to_int pt.metric));
   Bigstringaf.set_int64_le mmap
     (base + pt_max_data_offset_off)
     pt.max_data_offset;
@@ -539,7 +536,6 @@ let get_entry_point t = t.active_table.entry_point
 let get_max_level t = t.active_table.max_level
 let get_dimension t = t.active_table.dimension
 let get_epoch t = t.active_table.epoch
-let get_layout t = t.layout
 let get_mmap t = t.mmap
 
 let write_nodes t nodes ~entry_point ~max_level ~dimension =
@@ -549,8 +545,6 @@ let write_nodes t nodes ~entry_point ~max_level ~dimension =
   List.iter (fun (slot_id, node) -> write_node t txn ~slot_id node) nodes;
   set_entry_point txn ~entry_point ~max_level;
   commit t txn
-
-let base_table txn = txn.base_table
 
 let table_entry_point table = table.entry_point
 let table_max_level table = table.max_level

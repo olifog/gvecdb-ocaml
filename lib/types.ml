@@ -23,7 +23,6 @@ module Owner = struct
     let id = Int64.logand packed id_mask in
     (kind, id)
 
-  let kind_to_string = function Node -> "node" | Edge -> "edge"
 end
 
 type node_info = { id : node_id; node_type : string }

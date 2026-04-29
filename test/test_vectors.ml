@@ -44,13 +44,15 @@ let test_get_vector () =
   let retrieved = ok_exn (Gvecdb.get_vector db vec_id) in
   (* Vectors are stored normalized, so length should be same but values differ *)
   check int "same length" (Bigstring.length data) (Bigstring.length retrieved);
-  (* Compute expected normalized values *)
+  (* Verify values are normalized (unit length) within f32 precision *)
   let norm_sq = Array.fold_left (fun acc x -> acc +. (x *. x)) 0.0 original in
   let norm = sqrt norm_sq in
   for i = 0 to 3 do
-    let expected = Int32.bits_of_float (original.(i) /. norm) in
-    let actual = Bigstring.get_int32_le retrieved (i * 4) in
-    check int32 (Printf.sprintf "normalized value %d" i) expected actual
+    let expected = original.(i) /. norm in
+    let actual = Int32.float_of_bits (Bigstring.get_int32_le retrieved (i * 4)) in
+    let diff = Float.abs (expected -. actual) in
+    check bool (Printf.sprintf "normalized value %d within f32 precision" i)
+      true (diff < 1e-6)
   done
 
 let test_get_vector_unnormalized () =
@@ -504,13 +506,15 @@ let test_get_edge_vector_data () =
   in
   let retrieved = ok_exn (Gvecdb.get_vector db vec_id) in
   check int "same length" (Bigstring.length data) (Bigstring.length retrieved);
-  (* Vectors are stored normalized *)
+  (* Verify values are normalized within f32 precision *)
   let norm_sq = Array.fold_left (fun acc x -> acc +. (x *. x)) 0.0 original in
   let norm = sqrt norm_sq in
   for i = 0 to 3 do
-    let expected = Int32.bits_of_float (original.(i) /. norm) in
-    let actual = Bigstring.get_int32_le retrieved (i * 4) in
-    check int32 (Printf.sprintf "normalized value %d" i) expected actual
+    let expected = original.(i) /. norm in
+    let actual = Int32.float_of_bits (Bigstring.get_int32_le retrieved (i * 4)) in
+    let diff = Float.abs (expected -. actual) in
+    check bool (Printf.sprintf "normalized value %d within f32 precision" i)
+      true (diff < 1e-6)
   done
 
 let test_create_edge_vector_edge_not_found () =

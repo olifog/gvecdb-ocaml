@@ -8,15 +8,6 @@ let time_us f =
   let t1 = clock_us () in
   (result, t1 -. t0)
 
-let warmup ?(min_us = 500_000.0) ?(min_iters = 10) f =
-  let t0 = clock_us () in
-  let i = ref 0 in
-  while !i < min_iters || clock_us () -. t0 < min_us do
-    ignore (f ());
-    incr i
-  done;
-  !i
-
 let with_suppressed_gc f =
   Gc.compact ();
   let old = Gc.get () in
@@ -143,24 +134,6 @@ let load_fbin path =
     ) in
     (vectors, dim))
 
-let load_ibin path =
-  let ic = open_in_bin path in
-  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-    let buf4 = Bytes.create 4 in
-    let read_int32 () =
-      really_input ic buf4 0 4;
-      Int32.to_int (Bytes.get_int32_le buf4 0)
-    in
-    let n = read_int32 () in
-    let k = read_int32 () in
-    let row_buf = Bytes.create (k * 4) in
-    let gt = Array.init n (fun _ ->
-      really_input ic row_buf 0 (k * 4);
-      Array.init k (fun j ->
-        Int32.to_int (Bytes.get_int32_le row_buf (j * 4)))
-    ) in
-    (gt, k))
-
 (** {1 Memory measurement} *)
 
 let parse_proc_status_field name =
@@ -184,7 +157,6 @@ let parse_proc_status_field name =
       !result)
   with _ -> 0
 
-let get_rss_kb () = parse_proc_status_field "VmRSS"
 let get_peak_rss_kb () = parse_proc_status_field "VmPeak"
 
 (** {1 System metadata} *)
@@ -294,10 +266,6 @@ let get_string_arg name default =
       String.length s > plen && String.sub s 0 plen = prefix) in
     String.sub arg plen (String.length arg - plen)
   with Not_found -> default
-
-let has_flag name =
-  let flag = "--" ^ name in
-  Array.exists (fun s -> s = flag) Sys.argv
 
 let ensure_output_dir dir =
   (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())

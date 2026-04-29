@@ -173,12 +173,6 @@ let read_node_from_mmap (mmap : bigstring) ~file_offset : node_data =
     inline_vec = None;
   }
 
-let page_to_bigstring (page : bytes) =
-  let bs = Bigstringaf.create (Bytes.length page) in
-  Bigstringaf.blit_from_bytes page ~src_off:0 bs ~dst_off:0
-    ~len:(Bytes.length page);
-  bs
-
 let blit_page_to_mmap (page : bytes) (mmap : bigstring) ~dst_off ~len =
   Bigstringaf.blit_from_bytes page ~src_off:0 mmap ~dst_off ~len
 
@@ -193,9 +187,6 @@ let mmap_layer_count (mmap : bigstring) ~file_offset =
 
 let mmap_is_deleted (mmap : bigstring) ~file_offset =
   Bigstringaf.get mmap (file_offset + node_deleted_off) <> '\x00'
-
-let mmap_vector_id (mmap : bigstring) ~file_offset =
-  Bigstringaf.get_int64_le mmap (file_offset + node_vector_id_off)
 
 let iter_neighbors_mmap (mmap : bigstring) ~file_offset ~layer ~f =
   let base = layer_offset layer in

@@ -126,13 +126,6 @@ let encode_hnsw_slot_key ~tag_id ~vector_id : bigstring =
   Bigstring.set_int64_be buf 8 vector_id;
   buf
 
-let decode_hnsw_slot_key (bs : bigstring) : intern_id * vector_id =
-  if Bigstring.length bs < 16 then
-    invalid_arg "Keys.decode_hnsw_slot_key: buffer too short (need 16 bytes)";
-  let tag_id = Bigstring.get_int64_be bs 0 in
-  let vector_id = Bigstring.get_int64_be bs 8 in
-  (tag_id, vector_id)
-
 let encode_hnsw_slot_value slot_id : bigstring =
   encode_id_bs (Int64.of_int slot_id)
 

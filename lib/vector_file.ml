@@ -167,8 +167,6 @@ let close t =
   Msync.msync t.mmap;
   Unix.close t.fd
 
-let sync t = Msync.msync t.mmap
-
 let vector_storage_size dim =
   if dim < 0 || dim > max_vector_dim then
     invalid_arg (Printf.sprintf "vector_storage_size: invalid dimension %d" dim);
@@ -225,11 +223,6 @@ let read_vector_at t offset : (bigstring, error) result =
       else
         Ok (Bigstringaf.sub t.mmap ~off:(off + vec_header_size) ~len:data_len)
 
-let read_norm_at t offset : (float, error) result =
-  match read_header_at t offset with
-  | Error e -> Error e
-  | Ok header -> Ok header.norm
-
 let read_vector_with_header t offset : (bigstring * vector_header, error) result
     =
   match read_header_at t offset with
@@ -245,9 +238,3 @@ let read_vector_with_header t offset : (bigstring * vector_header, error) result
         in
         Ok (data, header)
 
-let get_vector_dim_at t offset : (int, error) result =
-  match read_header_at t offset with
-  | Error e -> Error e
-  | Ok header -> Ok header.dim
-
-let get_allocated_bytes t = get_next_offset t.mmap

@@ -2,8 +2,6 @@
 
 (** {1 core types} *)
 
-module Bigstring_message : Capnp.MessageSig.S
-
 type bigstring = Common.bigstring
 type id = int64
 type intern_id = int64

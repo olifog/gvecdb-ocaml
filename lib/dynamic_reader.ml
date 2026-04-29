@@ -17,22 +17,6 @@ type field_value =
   | V_text of string
   | V_data of string
 
-let field_value_to_string = function
-  | V_void -> "void"
-  | V_bool b -> string_of_bool b
-  | V_int8 v -> string_of_int v
-  | V_int16 v -> string_of_int v
-  | V_int32 v -> Int32.to_string v
-  | V_int64 v -> Int64.to_string v
-  | V_uint8 v -> string_of_int v
-  | V_uint16 v -> string_of_int v
-  | V_uint32 v -> Printf.sprintf "%ld" v
-  | V_uint64 v -> Printf.sprintf "%Ld" v
-  | V_float32 v -> string_of_float v
-  | V_float64 v -> string_of_float v
-  | V_text s -> s
-  | V_data s -> Printf.sprintf "<data:%d>" (String.length s)
-
 let parse_struct_sections (bs : bigstring) :
     (int * int * int * int, error) result =
   let len = Bigstring.length bs in
