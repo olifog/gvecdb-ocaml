@@ -221,6 +221,10 @@ class GvecdbClient:
         _check_error(result)
         return int(result.vectorId)
 
+    async def rebuild_hnsw_index(self, vector_tag: str) -> None:
+        result = await self._client.rebuildHnswIndex(vectorTag=vector_tag)
+        _check_error(result)
+
     async def knn_hnsw(
         self,
         vector_tag: str,

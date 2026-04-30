@@ -11,6 +11,7 @@ BEDROCK_MODEL_ID = "cohere.embed-english-v3"
 BEDROCK_REGION = os.environ.get("AWS_REGION", "eu-west-1")
 EMBEDDING_DIM = 1024
 BEDROCK_BATCH_LIMIT = 96
+BEDROCK_MAX_TEXT_LEN = 2048
 
 _client: boto3.client | None = None
 
@@ -26,7 +27,7 @@ def _invoke_cohere(texts: list[str], input_type: str) -> list[list[float]]:
     client = _get_client()
     all_embeddings: list[list[float]] = []
     for i in range(0, len(texts), BEDROCK_BATCH_LIMIT):
-        batch = texts[i : i + BEDROCK_BATCH_LIMIT]
+        batch = [t[:BEDROCK_MAX_TEXT_LEN] for t in texts[i : i + BEDROCK_BATCH_LIMIT]]
         body = json.dumps({
             "texts": batch,
             "input_type": input_type,

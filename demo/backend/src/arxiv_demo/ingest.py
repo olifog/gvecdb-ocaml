@@ -40,6 +40,7 @@ console = Console()
 EMBED_BATCH_SIZE = 96
 RPC_CONCURRENCY = 32
 MIN_YEAR = 0
+REBUILD_INTERVAL = 600_000
 
 OPENALEX_BATCH_SIZE = 50
 OPENALEX_EMAIL = "demo@gvecdb.dev"
@@ -308,6 +309,7 @@ async def ingest_papers(
                 author_name_to_id[name] = node_id
 
         task_papers = progress.add_task("Ingesting papers", total=len(remaining))
+        since_rebuild = 0
 
         for batch_start in range(0, len(remaining), EMBED_BATCH_SIZE):
             batch = remaining[batch_start : batch_start + EMBED_BATCH_SIZE]
@@ -389,7 +391,17 @@ async def ingest_papers(
             for p in batch:
                 ingested_ids.add(p["id"])
                 progress.advance(task_papers)
+            since_rebuild += len(batch)
             _save_state()
+
+            if since_rebuild >= REBUILD_INTERVAL:
+                console.print(
+                    f"[yellow]Rebuilding HNSW indexes ({len(ingested_ids)} papers)...[/yellow]"
+                )
+                await client.rebuild_hnsw_index("abstract_embedding")
+                await client.rebuild_hnsw_index("title_embedding")
+                since_rebuild = 0
+                console.print("[green]Rebuild complete[/green]")
 
     console.print(f"  Papers: {len(arxiv_id_to_node)}")
     console.print(f"  Authors: {len(author_name_to_id)}")

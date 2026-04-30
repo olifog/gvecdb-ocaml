@@ -168,6 +168,8 @@ let reconcile_hnsw t tag_name =
             in
             let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
             let changed = ref false in
+            let n_orphan = ref 0 in
+            let n_restore = ref 0 in
             for slot_id = 0 to node_count - 1 do
               match Hnsw_mvcc.read_node_with_vec mvcc table ~slot_id with
               | Some node
@@ -175,17 +177,31 @@ let reconcile_hnsw t tag_name =
                 ->
                   Hnsw_mvcc.write_node mvcc hnsw_txn ~slot_id
                     { node with deleted = true };
-                  changed := true
+                  changed := true;
+                  incr n_orphan
               | Some node when node.deleted && Hashtbl.mem lmdb_slots slot_id ->
                   Hnsw_mvcc.write_node mvcc hnsw_txn ~slot_id
                     { node with deleted = false };
-                  changed := true
+                  changed := true;
+                  incr n_restore
               | _ -> ()
             done;
             if !changed then begin
-              let ep, level =
-                find_best_entry_point mvcc table ~exclude_slot:(-1)
-              in
+              Printf.eprintf "gvecdb: reconcile tag=%s: %d orphans soft-deleted, %d restored (hnsw_nodes=%d lmdb_slots=%d)\n%!"
+                tag_name !n_orphan !n_restore node_count (Hashtbl.length lmdb_slots);
+              (* find entry point among non-orphan nodes only *)
+              let best_ep = ref (-1) in
+              let best_level = ref (-1) in
+              for i = 0 to node_count - 1 do
+                if Hashtbl.mem lmdb_slots i then
+                  match Hnsw_mvcc.read_node mvcc table ~slot_id:i with
+                  | Some n when n.layer_count - 1 > !best_level ->
+                      best_ep := i;
+                      best_level := n.layer_count - 1
+                  | _ -> ()
+              done;
+              let ep = !best_ep in
+              let level = !best_level in
               Hnsw_mvcc.set_entry_point hnsw_txn ~entry_point:ep
                 ~max_level:level;
               match Hnsw_mvcc.commit mvcc hnsw_txn with
@@ -208,7 +224,8 @@ let open_hnsw_mvcc_files t =
           let hnsw_epoch = Hnsw_mvcc.get_epoch mvcc in
           let lmdb_epoch = get_lmdb_hnsw_epoch t.db tag_name in
           if hnsw_epoch <> lmdb_epoch then begin
-            (* LMDB is source of truth; mismatch means crash between HNSW commit and LMDB commit *)
+            Printf.eprintf "gvecdb: epoch mismatch for tag=%s (hnsw=%Ld lmdb=%Ld), reconciling...\n%!"
+              tag_name hnsw_epoch lmdb_epoch;
             reconcile_hnsw t tag_name;
             let current_epoch = Hnsw_mvcc.get_epoch mvcc in
             ignore
@@ -216,7 +233,7 @@ let open_hnsw_mvcc_files t =
                    set_lmdb_hnsw_epoch t.db ~txn tag_name current_epoch))
           end
       | Error _ ->
-          () (* file doesn't exist yet, will be created on first insert *))
+          ())
     tags
 
 let create ?map_size path =
@@ -974,7 +991,7 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
           Ok ()
         end
         else begin
-          let batch_size = 1000 in
+          let batch_size = 100_000 in
           let hnsw_txn = ref (Hnsw_mvcc.begin_write mvcc) in
           let count = ref 0 in
           let pairwise_distance =

@@ -109,4 +109,9 @@ interface Gvecdb {
     k :UInt32,
     metric :UInt8
   ) -> (results :List(KnnResult), error :Text);
+
+  # -- Maintenance --
+  rebuildHnswIndex @21 (
+    vectorTag :Text
+  ) -> (success :Bool, error :Text);
 }

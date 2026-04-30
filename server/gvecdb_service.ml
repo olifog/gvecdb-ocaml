@@ -456,6 +456,25 @@ let local (db : Gvecdb.t) =
        | Error e -> Results.error_set results (Gvecdb.Error.to_string e));
       Capnp_rpc.Service.return response
 
+    method rebuild_hnsw_index_impl params release_param_caps =
+      let open G.RebuildHnswIndex in
+      let vector_tag = Params.vector_tag_get params in
+      release_param_caps ();
+      let response, results =
+        Capnp_rpc.Service.Response.create Results.init_pointer in
+      (match
+         Gvecdb.with_transaction db (fun txn ->
+           Gvecdb.rebuild_hnsw_index db ~txn ~vector_tag ())
+       with
+       | Some (Ok ()) -> Results.success_set results true
+       | Some (Error e) ->
+           Results.success_set results false;
+           Results.error_set results (Gvecdb.Error.to_string e)
+       | None ->
+           Results.success_set results false;
+           Results.error_set results "transaction aborted");
+      Capnp_rpc.Service.return response
+
     method knn_brute_force_impl params release_param_caps =
       let open G.KnnBruteForce in
       let query_data = Params.query_get params in
