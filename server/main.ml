@@ -2,8 +2,8 @@ open Eio.Std
 
 module Vat = Capnp_rpc_unix.Vat
 
-let serve db_path config =
-  let db = match Gvecdb.create db_path with
+let serve db_path map_size config =
+  let db = match Gvecdb.create ?map_size db_path with
     | Ok db -> db
     | Error e -> failwith (Gvecdb.Error.to_string e)
   in
@@ -27,10 +27,15 @@ let db_path =
   let doc = "Path to the database file" in
   Arg.(required @@ opt (some string) None @@ info ["db"] ~docv:"PATH" ~doc)
 
+let map_size =
+  let doc = "LMDB map size in bytes (default: 10 GiB)" in
+  Arg.(value @@ opt (some int) None @@ info ["map-size"] ~docv:"BYTES" ~doc)
+
 let serve_cmd env =
   let doc = "Run a gvecdb Cap'n Proto RPC server" in
   let info = Cmd.info "gvecdb-server" ~version:"0.1.0" ~doc in
-  Cmd.v info Term.(const (serve) $ db_path $ Capnp_rpc_unix.Vat_config.cmd env)
+  let capnp_env = object method net = env#net method fs = env#fs end in
+  Cmd.v info Term.(const (serve) $ db_path $ map_size $ Capnp_rpc_unix.Vat_config.cmd capnp_env)
 
 let () =
   Eio_main.run @@ fun env ->

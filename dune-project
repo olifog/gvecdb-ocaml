@@ -27,6 +27,9 @@
    bigstringaf
    stdint
    yojson
+   capnp-rpc-unix
+   eio_main
+   cmdliner
    (alcotest :with-test)
    (bisect_ppx :with-test)
  )

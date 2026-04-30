@@ -37,9 +37,9 @@ class ArxivRecord(TypedDict):
 
 console = Console()
 
-EMBED_BATCH_SIZE = 64
+EMBED_BATCH_SIZE = 96
 RPC_CONCURRENCY = 32
-MIN_YEAR = 2020
+MIN_YEAR = 0
 
 OPENALEX_BATCH_SIZE = 50
 OPENALEX_EMAIL = "demo@gvecdb.dev"
@@ -112,11 +112,11 @@ def load_papers(
 
             cats = record.get("categories", "")
             cat_set = set(cats.split())
-            if not cat_set & categories:
+            if categories and not cat_set & categories:
                 continue
 
             year = extract_year(record.get("update_date", ""))
-            if year < MIN_YEAR:
+            if MIN_YEAR and year < MIN_YEAR:
                 continue
 
             if "authors_parsed" in record:
@@ -477,8 +477,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest arXiv data into gvecdb")
     parser.add_argument("--arxiv-json", type=Path, required=True)
     parser.add_argument("--socket", default="/tmp/gvecdb.sock")
-    parser.add_argument("--limit", type=int, default=50000)
-    parser.add_argument("--categories", default="cs.AI,cs.LG,cs.CL,cs.CV,cs.IR")
+    parser.add_argument("--limit", type=int, default=3000000)
+    parser.add_argument("--categories", default="")
     parser.add_argument("--state-file", type=Path, default=Path("ingest_state.json"))
     parser.add_argument("--skip-citations", action="store_true")
     parser.add_argument(
@@ -487,7 +487,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    categories = set(args.categories.split(","))
+    categories = set(args.categories.split(",")) if args.categories else set()
     papers = load_papers(args.arxiv_json, args.limit, categories) if not args.citations_only else []
 
     if not papers and not args.citations_only:

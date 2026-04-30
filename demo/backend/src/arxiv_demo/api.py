@@ -11,7 +11,7 @@ import capnp
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from arxiv_demo.embeddings import embed_to_bytes
+from arxiv_demo.embeddings import embed_query_to_bytes
 from arxiv_demo.gvecdb_client import (
     EdgeInfo,
     GvecdbClient,
@@ -183,7 +183,7 @@ async def search(
 ) -> SearchResponse:
     _validate_tag(tag)
     client = await get_client()
-    query_vec = await asyncio.to_thread(embed_to_bytes, q)
+    query_vec = await asyncio.to_thread(embed_query_to_bytes, q)
     # overfetch when filtering so we still return k results after post-filter
     fetch_k = k * 3 if (year_min or year_max or category or published_only) else k
     results = await client.knn_hnsw(
@@ -373,7 +373,7 @@ async def get_similar(
     data = GvecdbClient.decode_paper_props(props)
 
     text = data["abstract"] if tag == "abstract_embedding" else data["title"]
-    query_vec = await asyncio.to_thread(embed_to_bytes, text)
+    query_vec = await asyncio.to_thread(embed_query_to_bytes, text)
 
     results = await client.knn_hnsw(
         vector_tag=tag, query=query_vec, k=k + 1, ef=max(k * 4, 64), metric=METRIC_COSINE
