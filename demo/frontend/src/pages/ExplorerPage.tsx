@@ -40,6 +40,7 @@ export default function ExplorerPage() {
 
   useEffect(() => {
     if (!neighbourhood || !focusNodeId) return;
+    if (sidebarDismissedRef.current === focusNodeId) return;
     const node = neighbourhood.nodes.find((n) => n.id === focusNodeId);
     if (node && (!selectedNode || selectedNode.id !== focusNodeId)) {
       setSelectedNode({ id: node.id, type: node.type });
@@ -49,17 +50,26 @@ export default function ExplorerPage() {
   useEffect(() => {
     if (!neighbourhood) return;
     setMergedGraph((prev) => {
-      const existingNodeIds = new Set(prev.nodes.map((n) => n.id));
+      const existingNodeMap = new Map(prev.nodes.map((n) => [n.id, n]));
       const existingEdgeIds = new Set(prev.edges.map((e) => e.id));
       const newNodes = neighbourhood.nodes.filter(
-        (n) => !existingNodeIds.has(n.id),
+        (n) => !existingNodeMap.has(n.id),
       );
       const newEdges = neighbourhood.edges.filter(
         (e) => !existingEdgeIds.has(e.id),
       );
       if (newNodes.length === 0 && newEdges.length === 0) return prev;
 
-      let allNodes = [...prev.nodes, ...newNodes];
+      const anchorNode = focusNodeId != null ? existingNodeMap.get(focusNodeId) : undefined;
+      const positioned = newNodes.map((n) => {
+        const anchor = anchorNode as Record<string, unknown> | undefined;
+        if (anchor?.x != null && anchor?.y != null) {
+          return { ...n, x: (anchor.x as number) + (Math.random() - 0.5) * 60, y: (anchor.y as number) + (Math.random() - 0.5) * 60 };
+        }
+        return n;
+      });
+
+      let allNodes = [...prev.nodes, ...positioned];
       let allEdges = [...prev.edges, ...newEdges];
 
       if (allNodes.length > MAX_GRAPH_NODES) {
@@ -72,7 +82,7 @@ export default function ExplorerPage() {
 
       return { nodes: allNodes, edges: allEdges };
     });
-  }, [neighbourhood]);
+  }, [neighbourhood, focusNodeId]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -107,6 +117,7 @@ export default function ExplorerPage() {
 
   const handleNodeClick = useCallback(
     (nodeId: number, nodeType: string) => {
+      sidebarDismissedRef.current = null;
       setFocusNodeId(nodeId);
       setSelectedNode({ id: nodeId, type: nodeType });
       setSearchActive(false);
@@ -129,11 +140,14 @@ export default function ExplorerPage() {
     navigate("/explorer", { replace: true });
   }, [navigate]);
 
-  const handleCloseSidebar = useCallback(() => {
-    setSelectedNode(null);
-  }, []);
+  const sidebarDismissedRef = useRef<number | null>(null);
 
-  const sidebarWidth = selectedNode ? 380 : 0;
+  const handleCloseSidebar = useCallback(() => {
+    if (selectedNode) sidebarDismissedRef.current = selectedNode.id;
+    setSelectedNode(null);
+  }, [selectedNode]);
+
+  const sidebarWidth = selectedNode ? 440 : 0;
   const graphWidth = dimensions.width - sidebarWidth;
 
   return (
@@ -161,7 +175,7 @@ export default function ExplorerPage() {
 
           <div className="absolute top-3 left-3 right-3 z-10 pointer-events-none">
             <div className="mx-auto max-w-xl pointer-events-auto">
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
                 <div className="flex-1">
                   <SearchBar onSearch={handleSearch} />
                 </div>
@@ -196,7 +210,7 @@ export default function ExplorerPage() {
         </div>
 
         {selectedNode && (
-          <div className="w-[380px] shrink-0 h-full overflow-hidden">
+          <div className="w-[440px] shrink-0 h-full overflow-hidden">
             <NodeSidebar
               key={selectedNode.id}
               nodeId={selectedNode.id}

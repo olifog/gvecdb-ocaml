@@ -23,7 +23,7 @@ export default function FilterPanel({ filters, onChange }: FilterPanelProps) {
   const selectedCats = filters.category?.split(",").filter(Boolean) ?? [];
 
   const addCategory = (cat: string) => {
-    const trimmed = cat.trim().toLowerCase();
+    const trimmed = cat.trim();
     if (!trimmed || selectedCats.includes(trimmed)) return;
     const next = [...selectedCats, trimmed];
     onChange({ ...filters, category: next.join(",") });
