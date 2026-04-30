@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import type {
   AuthorDetail,
+  DiscoveryResult,
   GraphData,
   PaperDetail,
+  PaperStats,
   PaperSummary,
   SearchFilters,
   SearchResponse,
@@ -81,3 +83,20 @@ export function useSimilar(
     enabled: nodeId !== undefined,
   });
 }
+
+export function usePaperStats(nodeId: number | undefined) {
+  return useQuery<PaperStats>({
+    queryKey: ["paperStats", nodeId],
+    queryFn: () => fetchJson(`${BASE}/paper/${nodeId}/stats`),
+    enabled: nodeId !== undefined,
+  });
+}
+
+export function useDiscovery(nodeId: number | undefined, k = 20) {
+  return useQuery<DiscoveryResult>({
+    queryKey: ["discovery", nodeId, k],
+    queryFn: () => fetchJson(`${BASE}/paper/${nodeId}/discovery?k=${k}`),
+    enabled: nodeId !== undefined,
+  });
+}
+

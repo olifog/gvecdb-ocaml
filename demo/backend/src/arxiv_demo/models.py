@@ -83,4 +83,17 @@ class SearchResponse(BaseModel):
     results: list[PaperSummary]
 
 
+class PaperStats(BaseModel):
+    node_id: int
+    citation_count: int
+    cited_by_count: int
+    author_count: int
+    categories: list[str]
+
+
+class DiscoveryResult(BaseModel):
+    cited: list[PaperSummary]
+    undiscovered: list[PaperSummary]
+
+
 PaperDetail.model_rebuild()

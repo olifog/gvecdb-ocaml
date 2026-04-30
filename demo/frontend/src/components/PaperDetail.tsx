@@ -4,11 +4,15 @@ import {
   CalendarDots,
   FileText,
   GitBranch,
+  Graph,
   LinkSimple,
+  Lightbulb,
 } from "@phosphor-icons/react";
+import { usePaperStats, useDiscovery } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import type { PaperDetail as PaperDetailType } from "@/api/types";
+import PaperCard from "@/components/PaperCard";
 
 interface PaperDetailProps {
   paper: PaperDetailType;
@@ -20,6 +24,8 @@ export default function PaperDetailView({
   onNavigate,
 }: PaperDetailProps) {
   const cats = paper.categories.split(/\s+/);
+  const statsQuery = usePaperStats(paper.node_id);
+  const discoveryQuery = useDiscovery(paper.node_id, 15);
 
   return (
     <div className="space-y-4">
@@ -92,6 +98,19 @@ export default function PaperDetailView({
           </div>
         )}
       </div>
+
+      {statsQuery.data && (
+        <div className="flex gap-3 text-xs">
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <Graph className="size-3 shrink-0" />
+            <span>{statsQuery.data.citation_count} references</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <Graph className="size-3 shrink-0" />
+            <span>{statsQuery.data.cited_by_count} citations</span>
+          </div>
+        </div>
+      )}
 
       {paper.comments && (
         <p className="text-xs text-muted-foreground italic">
@@ -167,6 +186,30 @@ export default function PaperDetailView({
                   {ref.title}{" "}
                   <span className="text-muted-foreground">({ref.year})</span>
                 </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {discoveryQuery.data && discoveryQuery.data.undiscovered.length > 0 && (
+        <>
+          <Separator />
+          <div>
+            <h2 className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground flex items-center gap-1">
+              <Lightbulb className="size-3" />
+              Undiscovered ({discoveryQuery.data.undiscovered.length})
+            </h2>
+            <p className="text-[10px] text-muted-foreground mb-2">
+              Semantically similar but not in the citation graph
+            </p>
+            <div className="space-y-1.5">
+              {discoveryQuery.data.undiscovered.map((p) => (
+                <PaperCard
+                  key={p.node_id}
+                  paper={p}
+                  onNavigate={onNavigate}
+                />
               ))}
             </div>
           </div>

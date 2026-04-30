@@ -22,11 +22,13 @@ from arxiv_demo.gvecdb_client import (
 from arxiv_demo.models import (
     AuthorDetail,
     AuthorRef,
+    DiscoveryResult,
     GraphData,
     GraphEdge,
     GraphNode,
     PaperDetail,
     PaperRef,
+    PaperStats,
     PaperSummary,
     SearchResponse,
 )
@@ -390,3 +392,60 @@ async def get_similar(
 
     summaries = await asyncio.gather(*[_fetch_similar(r) for r in filtered])
     return [p for p in summaries if p is not None]
+
+
+@app.get("/api/paper/{node_id}/stats", response_model=PaperStats)
+async def get_paper_stats(node_id: int) -> PaperStats:
+    client = await get_client()
+    props = await client.get_node_props(node_id)
+    data = GvecdbClient.decode_paper_props(props)
+    outbound, inbound = await asyncio.gather(
+        client.get_outbound_edges(node_id),
+        client.get_inbound_edges(node_id),
+    )
+    return PaperStats(
+        node_id=node_id,
+        citation_count=sum(1 for e in outbound if e.edge_type == "cites"),
+        cited_by_count=sum(1 for e in inbound if e.edge_type == "cites"),
+        author_count=sum(1 for e in inbound if e.edge_type == "authored"),
+        categories=data["categories"].split(),
+    )
+
+
+@app.get("/api/paper/{node_id}/discovery", response_model=DiscoveryResult)
+async def get_discovery(
+    node_id: int,
+    k: int = Query(default=20, ge=1, le=50),
+) -> DiscoveryResult:
+    """Find semantically similar papers, split into cited and undiscovered."""
+    client = await get_client()
+    props = await client.get_node_props(node_id)
+    data = GvecdbClient.decode_paper_props(props)
+    query_vec = await asyncio.to_thread(embed_query_to_bytes, data["abstract"])
+
+    results_task = client.knn_hnsw(
+        vector_tag="abstract_embedding", query=query_vec,
+        k=k + 1, ef=max(k * 4, 64), metric=METRIC_COSINE,
+    )
+    outbound_task = client.get_outbound_edges(node_id)
+    inbound_task = client.get_inbound_edges(node_id)
+    results, outbound, inbound = await asyncio.gather(results_task, outbound_task, inbound_task)
+
+    cite_ids = {e.dst for e in outbound if e.edge_type == "cites"}
+    cite_ids |= {e.src for e in inbound if e.edge_type == "cites"}
+
+    similar = [r for r in results if r.owner_id != node_id][:k]
+
+    async def _fetch(r: KnnResult) -> tuple[PaperSummary | None, bool]:
+        try:
+            s = await _get_paper_summary(client, r.owner_id, score=1.0 - r.distance)
+            return s, r.owner_id in cite_ids
+        except RuntimeError:
+            return None, False
+
+    fetched = await asyncio.gather(*[_fetch(r) for r in similar])
+    cited = [s for s, is_cited in fetched if s is not None and is_cited]
+    undiscovered = [s for s, is_cited in fetched if s is not None and not is_cited]
+    return DiscoveryResult(cited=cited, undiscovered=undiscovered)
+
+

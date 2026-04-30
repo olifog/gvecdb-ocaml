@@ -84,3 +84,17 @@ export interface SearchFilters {
   category?: string;
   publishedOnly: boolean;
 }
+
+export interface PaperStats {
+  node_id: number;
+  citation_count: number;
+  cited_by_count: number;
+  author_count: number;
+  categories: string[];
+}
+
+export interface DiscoveryResult {
+  cited: PaperSummary[];
+  undiscovered: PaperSummary[];
+}
+

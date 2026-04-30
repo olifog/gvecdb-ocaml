@@ -1,4 +1,4 @@
-import { Funnel } from "@phosphor-icons/react";
+import { Funnel, X } from "@phosphor-icons/react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,16 +10,9 @@ interface FilterPanelProps {
   onChange: (filters: SearchFilters) => void;
 }
 
-const CATEGORIES = [
-  { value: "cs.AI", label: "AI" },
-  { value: "cs.LG", label: "ML" },
-  { value: "cs.CL", label: "NLP" },
-  { value: "cs.CV", label: "Vision" },
-  { value: "cs.IR", label: "IR" },
-] as const;
-
 export default function FilterPanel({ filters, onChange }: FilterPanelProps) {
   const [open, setOpen] = useState(false);
+  const [catInput, setCatInput] = useState("");
 
   const activeCount =
     (filters.yearMin != null ? 1 : 0) +
@@ -27,18 +20,21 @@ export default function FilterPanel({ filters, onChange }: FilterPanelProps) {
     (filters.category ? 1 : 0) +
     (filters.publishedOnly ? 1 : 0);
 
-  const selectedCats = new Set(filters.category?.split(",").filter(Boolean) ?? []);
+  const selectedCats = filters.category?.split(",").filter(Boolean) ?? [];
 
-  const toggleCategory = (cat: string) => {
-    const next = new Set(selectedCats);
-    if (next.has(cat)) {
-      next.delete(cat);
-    } else {
-      next.add(cat);
-    }
+  const addCategory = (cat: string) => {
+    const trimmed = cat.trim().toLowerCase();
+    if (!trimmed || selectedCats.includes(trimmed)) return;
+    const next = [...selectedCats, trimmed];
+    onChange({ ...filters, category: next.join(",") });
+    setCatInput("");
+  };
+
+  const removeCategory = (cat: string) => {
+    const next = selectedCats.filter((c) => c !== cat);
     onChange({
       ...filters,
-      category: next.size > 0 ? [...next].join(",") : undefined,
+      category: next.length > 0 ? next.join(",") : undefined,
     });
   };
 
@@ -91,24 +87,37 @@ export default function FilterPanel({ filters, onChange }: FilterPanelProps) {
             />
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground w-12 shrink-0">
+          <div className="flex items-start gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground w-12 shrink-0 pt-1">
               Area
             </span>
-            <div className="flex flex-wrap gap-1">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat.value}
-                  onClick={() => toggleCategory(cat.value)}
-                  className={
-                    selectedCats.has(cat.value)
-                      ? "inline-flex h-5 items-center px-2 text-xs font-medium bg-primary text-primary-foreground"
-                      : "inline-flex h-5 items-center px-2 text-xs font-medium border text-muted-foreground hover:text-foreground"
+            <div className="flex-1 space-y-1.5">
+              <Input
+                placeholder="e.g. cs.AI, math.CO, physics.optics"
+                value={catInput}
+                onChange={(e) => setCatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === ",") {
+                    e.preventDefault();
+                    addCategory(catInput);
                   }
-                >
-                  {cat.label}
-                </button>
-              ))}
+                }}
+                className="h-7 text-xs"
+              />
+              {selectedCats.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {selectedCats.map((cat) => (
+                    <button
+                      key={cat}
+                      onClick={() => removeCategory(cat)}
+                      className="inline-flex h-5 items-center gap-0.5 bg-primary text-primary-foreground px-1.5 text-[10px] font-medium"
+                    >
+                      {cat}
+                      <X className="size-2.5" />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -130,9 +139,7 @@ export default function FilterPanel({ filters, onChange }: FilterPanelProps) {
               <Button
                 variant="ghost"
                 size="xs"
-                onClick={() =>
-                  onChange({ publishedOnly: false })
-                }
+                onClick={() => onChange({ publishedOnly: false })}
               >
                 Clear all
               </Button>
