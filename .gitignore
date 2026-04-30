@@ -8,3 +8,17 @@ perf.data*
 *.prof
 callgrind*
 datasets/
+
+demo/frontend/node_modules/
+demo/frontend/dist/
+bun.lock
+demo/backend/__pycache__/
+demo/backend/src/arxiv_demo/__pycache__/
+demo/backend/.venv/
+demo/backend/*.egg-info/
+demo/data/
+ingest_state.json
+*.pyc
+.mypy_cache/
+.ruff_cache/
+gvecdb.cap

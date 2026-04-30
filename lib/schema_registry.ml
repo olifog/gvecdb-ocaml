@@ -310,7 +310,6 @@ let make_registered_schema type_name kind dwc pc fields =
   { type_name; kind; data_word_count = dwc; pointer_count = pc;
     fields; field_by_name }
 
-(* In-memory cache -- keyed by type_name *)
 let schema_cache : (string, registered_schema) Hashtbl.t = Hashtbl.create 16
 
 let register_schema_from_capnp (db : t)

@@ -4,7 +4,6 @@ module Bigstring = Bigstringaf
 let default_map_size = 10 * 1024 * 1024 * 1024
 
 let vector_file_path (lmdb_path : string) : string =
-  (* LMDB path is the .db file, vector file is alongside it *)
   let base = Filename.remove_extension lmdb_path in
   base ^ ".vectors"
 
@@ -17,7 +16,6 @@ let hnsw_file_path (lmdb_path : string) (tag : string) : string =
   Filename.concat dir (tag ^ ".hnsw")
 
 let create ?(map_size = default_map_size) (path : string) : (t, error) result =
-  (* First try to create the vector file *)
   let vec_path = vector_file_path path in
   match Vector_file.create vec_path with
   | Error e -> Error (Storage_error (Vector_file.error_to_string e))

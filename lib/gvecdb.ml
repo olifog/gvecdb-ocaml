@@ -153,7 +153,6 @@ let reconcile_hnsw t tag_name =
         (fun () ->
           let node_count = Hnsw_mvcc.table_node_count table in
           if node_count > 0 then begin
-            (* build slot_id set from LMDB hnsw_slots for this tag *)
             let lmdb_slots =
               match tag_id_opt with
               | None -> Hashtbl.create 0
@@ -167,7 +166,6 @@ let reconcile_hnsw t tag_name =
                       tbl)
                     (Hashtbl.create (node_count * 2))
             in
-            (* scan HNSW nodes and fix discrepancies *)
             let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
             let changed = ref false in
             for slot_id = 0 to node_count - 1 do
@@ -190,7 +188,6 @@ let reconcile_hnsw t tag_name =
               in
               Hnsw_mvcc.set_entry_point hnsw_txn ~entry_point:ep
                 ~max_level:level;
-              (* commit result matters for crash consistency *)
               match Hnsw_mvcc.commit mvcc hnsw_txn with
               | Ok () -> ()
               | Error e ->
@@ -211,8 +208,7 @@ let open_hnsw_mvcc_files t =
           let hnsw_epoch = Hnsw_mvcc.get_epoch mvcc in
           let lmdb_epoch = get_lmdb_hnsw_epoch t.db tag_name in
           if hnsw_epoch <> lmdb_epoch then begin
-            (* epoch mismatch crash between HNSW commit and LMDB commit.
-             Reconcile HNSW to match LMDB (source of truth), then sync epochs *)
+            (* LMDB is source of truth; mismatch means crash between HNSW commit and LMDB commit *)
             reconcile_hnsw t tag_name;
             let current_epoch = Hnsw_mvcc.get_epoch mvcc in
             ignore
@@ -669,7 +665,6 @@ let delete_vector_internal (t : t) ?txn (vector_id : vector_id) :
                  (Lmdb.Map.get t.db.hnsw_slots ?txn slot_key))
           with Not_found | Lmdb.Not_found | Invalid_argument _ -> None
         in
-        (* mark deleted in MVCC file *)
         (match (slot_id_opt, Hashtbl.find_opt t.hnsw_mvcc vector_tag) with
         | Some slot_id, Some mvcc ->
             let table = Hnsw_mvcc.begin_read mvcc in
@@ -697,10 +692,8 @@ let delete_vector_internal (t : t) ?txn (vector_id : vector_id) :
                     | Error _ -> Hnsw_mvcc.rollback mvcc hnsw_txn)
                 | None -> ())
         | _ -> ());
-        (* remove slot mapping from LMDB *)
         (try Lmdb.Map.remove t.db.hnsw_slots ?txn slot_key
          with Not_found | Lmdb.Not_found -> ());
-        (* remove from LMDB *)
         Lmdb.Map.remove t.db.vector_owners ?txn key;
         let index_key =
           Keys.encode_vector_index_bs ~owner_kind ~owner_id ~vector_tag_id
@@ -718,8 +711,6 @@ let delete_vector_internal (t : t) ?txn (vector_id : vector_id) :
 let delete_vector (t : t) ~txn (vector_id : vector_id) : (unit, error) result =
   delete_vector_internal t ~txn vector_id
 
-(* delete all vectors attached to an owner (node or edge). Used for cascade
-   deletes. silently ignores already-deleted vectors *)
 let delete_vectors_for_owner (t : t) ?txn (owner_kind : owner_kind)
     (owner_id : id) : (unit, error) result =
   let prefix = Keys.encode_vector_index_prefix_bs ~owner_kind ~owner_id () in
@@ -751,7 +742,6 @@ let delete_edge (t : t) ?txn (edge_id : edge_id) : (unit, error) result =
 
 let delete_node (t : t) ?txn (node_id : node_id) : (unit, error) result =
   let key = Keys.encode_id_bs node_id in
-  (* check node exists first *)
   let node_meta_exists =
     try
       let _ = Lmdb.Map.get t.db.node_meta ?txn key in
@@ -761,9 +751,7 @@ let delete_node (t : t) ?txn (node_id : node_id) : (unit, error) result =
   if not node_meta_exists then Error (Node_not_found node_id)
   else
     try
-      (* 1. delete all vectors directly attached to this node *)
       let* () = delete_vectors_for_owner t ?txn Node node_id in
-      (* 2. get all outbound edges and delete them (with their vectors) *)
       let* outbound_edges = get_outbound_edges t ?txn node_id () in
       let rec delete_edges = function
         | [] -> Ok ()
@@ -773,10 +761,8 @@ let delete_node (t : t) ?txn (node_id : node_id) : (unit, error) result =
             delete_edges rest
       in
       let* () = delete_edges outbound_edges in
-      (* 3. get all inbound edges and delete them (with their vectors) *)
       let* inbound_edges = get_inbound_edges t ?txn node_id () in
       let* () = delete_edges inbound_edges in
-      (* 4. delete the node itself *)
       Lmdb.Map.remove t.db.nodes ?txn key;
       Lmdb.Map.remove t.db.node_meta ?txn key;
       Ok ()
@@ -852,7 +838,6 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
                 (metric_to_string metric)
                 (metric_to_string index_metric)))
       else
-        (* capture MVCC snapshot *)
         let table = Hnsw_mvcc.begin_read mvcc in
         Fun.protect
           ~finally:(fun () -> Hnsw_mvcc.end_read mvcc table)
@@ -885,7 +870,6 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
                 in
                 let results = Hnsw_mvcc.search_mvcc ctx ~k ~ef in
 
-                (* convert to knn_result *)
                 let results_with_info =
                   List.filter_map
                     (fun (slot_id, dist) ->
@@ -925,6 +909,7 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
             if vtag_id = target_tag_id then (vid, offset) :: acc else acc)
           []
   in
+  (* Rw cursor for in-place deletion; can't use fold_prefix *)
   let clear_slot_mappings tag_id =
     let prefix = Keys.encode_id_bs tag_id in
     let prefix_len = Bigstring.length prefix in
@@ -966,7 +951,6 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
   (match tag_id_opt with
   | Some tag_id -> clear_slot_mappings tag_id
   | None -> ());
-  (* create fresh MVCC file *)
   match Hnsw_mvcc.create file_path ~metric ~params:hnsw_params () with
   | Error e -> Error (Storage_error (Hnsw_mvcc.error_to_string e))
   | Ok mvcc ->
@@ -976,7 +960,6 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
         Ok ()
       end
       else begin
-        (* get dimension from first vector *)
         let dim =
           match List.hd vectors with
           | _, offset -> (

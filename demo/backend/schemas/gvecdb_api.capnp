@@ -1,0 +1,1 @@
+../../../server/gvecdb_api.capnp

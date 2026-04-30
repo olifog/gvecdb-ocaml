@@ -203,7 +203,6 @@ let create path ~metric ~(params : Hnsw.params) ?seed () =
       let fd = Unix.openfile path Unix.[ O_RDWR; O_CREAT; O_TRUNC ] 0o644 in
       Unix.ftruncate fd initial_file_size;
       let mmap = create_mmap fd initial_file_size in
-      (* superblock *)
       for i = 0 to 7 do
         Bigstringaf.set mmap (sb_magic_off + i) (String.get magic i)
       done;
@@ -218,7 +217,6 @@ let create path ~metric ~(params : Hnsw.params) ?seed () =
       Bigstringaf.set_int64_le mmap sb_ml_off (Int64.bits_of_float params.ml);
       Bigstringaf.set_int32_le mmap sb_checksum_off
         (Hnsw_page.crc32 mmap 0 sb_checksum_off);
-      (* empty page tables *)
       let empty =
         {
           epoch = 1L;
@@ -446,7 +444,6 @@ let commit t txn =
   try
     update_layout t txn.new_dimension;
     let layout = t.layout in
-    (* Flush overlay to dirty_pages *)
     (match txn.overlay with
     | None -> ()
     | Some ov ->
@@ -468,7 +465,7 @@ let commit t txn =
         Hashtbl.fold (fun pid page acc -> (pid, page) :: acc) txn.dirty_pages []
         |> List.sort (fun (a, _) (b, _) -> compare a b)
       in
-      (* allocate space: append-only, old pages are abandoned *)
+      (* append-only: old pages are abandoned, not reclaimed *)
       let write_offset = ref txn.base_table.max_data_offset in
       let new_offsets =
         Array.init new_page_count (fun pid ->
@@ -485,18 +482,15 @@ let commit t txn =
           dirty_list
       in
       let new_max_offset = !write_offset in
-      (* grow file if needed *)
       let needed = Int64.to_int new_max_offset in
       let initial_file_size = initial_file_size_for_layout layout in
       if needed > t.file_size then
         grow_file t (max (t.file_size * 2) (needed + initial_file_size));
-      (* write pages *)
       List.iter
         (fun (off, page) ->
           Hnsw_page.blit_page_to_mmap page t.mmap
             ~dst_off:(Int64.to_int off) ~len:layout.page_size)
         allocations;
-      (* build new page table *)
       let new_table =
         {
           epoch = Int64.add txn.base_epoch 1L;
@@ -513,7 +507,7 @@ let commit t txn =
       let shadow = 1 - t.active_which in
       write_page_table t.mmap shadow new_table;
       Msync.msync t.mmap;
-      (* atomic swap *)
+      (* atomic swap: linearization point of the commit *)
       Bigstringaf.set_int64_le t.mmap sb_active_root_off (Int64.of_int shadow);
       Bigstringaf.set_int32_le t.mmap sb_checksum_off
         (Hnsw_page.crc32 t.mmap 0 sb_checksum_off);
@@ -550,7 +544,6 @@ let table_entry_point table = table.entry_point
 let table_max_level table = table.max_level
 let table_node_count table = table.node_count
 
-(* Search context for MVCC-based search *)
 type search_context = {
   mvcc : t;
   table : page_table;
@@ -567,7 +560,6 @@ let rec take_n n acc = function
   | _ when n <= 0 -> List.rev acc
   | x :: rest -> take_n (n - 1) (x :: acc) rest
 
-(* Beam search on MVCC snapshot - single layer *)
 let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
   let n_slots = max visited_size ctx.table.node_count in
   let visited = Bitset.create (n_slots + 1) in
@@ -614,7 +606,6 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
             else ctx.dist_from_offset (fo + Hnsw_page.node_vec_header_off))
   in
 
-  (* Initialize with entry points *)
   List.iter
     (fun ep ->
       if not (Bitset.test_and_set visited ep) then begin
@@ -626,7 +617,6 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
       end)
     entry_points;
 
-  (* Expand candidates *)
   let rec expand () =
     match Int_heap.pop candidates with
     | None -> ()
@@ -646,7 +636,6 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
               end
             end
           in
-          (* Check overlay first, then fall back to mmap accessors *)
           let from_overlay =
             match overlay with
             | Some ov -> Hashtbl.find_opt ov c_slot
@@ -674,7 +663,6 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
   expand ();
   Int_topk.to_sorted_list results |> List.map (fun (dist, slot) -> (slot, dist))
 
-(* Full HNSW search on MVCC snapshot *)
 let search_mvcc ctx ~k ~ef =
   let table = ctx.table in
   if table.entry_point < 0 then []
@@ -712,12 +700,6 @@ let select_neighbors candidates m ~pairwise_dist =
   if remaining > 0 then selected @ take_n remaining [] discarded
   else selected
 
-(* Insert into MVCC with inline vector data.
-   inline_vec: the raw vector bytes (16-byte header + dim*4 float32 data)
-   compute_distance: takes a byte offset into the HNSW mmap (at vec header)
-     and returns distance to the query vector
-   compute_pairwise_distance: takes two vector_ids (int64) and returns the
-     distance between them (used for neighbor pruning, reads from vector_file) *)
 let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
     ~dist_from_inline ~compute_pairwise_distance ~dimension =
   let params = t.params in
