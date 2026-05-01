@@ -11,7 +11,7 @@
 Usage:
     uv run scripts/compare_hnswlib.py [--n 10000] [--dim 128] [--seed 42]
     uv run scripts/compare_hnswlib.py --dataset datasets/sift-128
-    uv run scripts/compare_hnswlib.py --m 16,32 --ef-construction 128,256
+    uv run scripts/compare_hnswlib.py --dataset datasets/sift-128 --k 10,50
 
 Outputs JSON in the same format as bench_ann for direct comparison.
 """
@@ -44,7 +44,6 @@ def generate_dataset(n: int, dim: int, seed: int) -> np.ndarray:
 
 
 def load_fbin(path: str) -> np.ndarray:
-    """Load vectors from binary format (.fbin)."""
     with open(path, "rb") as f:
         n, dim = struct.unpack("<ii", f.read(8))
         data = np.frombuffer(f.read(n * dim * 4), dtype=np.float32)
@@ -52,11 +51,21 @@ def load_fbin(path: str) -> np.ndarray:
 
 
 def load_ibin(path: str) -> np.ndarray:
-    """Load ground truth indices from binary format (.ibin)."""
     with open(path, "rb") as f:
         n, k = struct.unpack("<ii", f.read(8))
         data = np.frombuffer(f.read(n * k * 4), dtype=np.int32)
         return data.reshape(n, k)
+
+
+def load_metadata(path: str) -> dict:
+    meta = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    meta[key.strip()] = value.strip()
+    return meta
 
 
 def brute_force_knn(
@@ -89,9 +98,8 @@ def compute_recall(ground_truth: np.ndarray, approximate: np.ndarray) -> float:
 
 
 def get_rss_mb() -> float:
-    """Peak RSS in MB via getrusage."""
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    return usage.ru_maxrss / 1024  # Linux reports KB
+    return usage.ru_maxrss / 1024
 
 
 def get_system_metadata() -> dict:
@@ -105,64 +113,66 @@ def get_system_metadata() -> dict:
     }
 
 
-def bench_hnswlib(
+def build_hnswlib_index(
     n: int,
     dim: int,
-    k: int,
-    seed: int,
-    ef_values: list[int],
     metric_name: str,
-    n_queries: int,
     M: int,
     ef_construction: int,
+    seed: int,
     data: np.ndarray | None = None,
-    queries: np.ndarray | None = None,
-    ground_truth: np.ndarray | None = None,
-) -> dict:
+) -> tuple:
     space = "cosine" if metric_name == "cosine" else "l2"
-
-    print(
-        f"\n=== hnswlib: n={n} dim={dim} metric={metric_name} k={k} M={M} ef_c={ef_construction} ==="
-    )
 
     if data is None:
         data = generate_dataset(n, dim, seed)
-    if queries is None:
-        queries = generate_dataset(n_queries, dim, seed + 99)
 
-    # Ground truth
-    if ground_truth is None:
-        print("computing ground truth...", flush=True)
-        gt_metric = "cosine" if space == "cosine" else "l2"
-        ground_truth = brute_force_knn(data, queries, k, gt_metric)
+    print(
+        f"\n=== hnswlib build: n={n} dim={dim} metric={metric_name} M={M} ef_c={ef_construction} ==="
+    )
 
-    # Build index
     rss_before = get_rss_mb()
-
     idx = hnswlib.Index(space=space, dim=dim)
     idx.init_index(max_elements=n, M=M, ef_construction=ef_construction)
 
-    print("building index...", flush=True)
     t0 = time.perf_counter()
     idx.add_items(data)
     build_time = time.perf_counter() - t0
-
     rss_after = get_rss_mb()
+
     print(
         f"Build: {build_time:.2f}s ({n / build_time:.0f} vec/s), "
         f"RSS delta: {rss_after - rss_before:.1f} MB"
     )
 
+    build_info = {
+        "time_s": build_time,
+        "vectors_per_second": n / build_time,
+        "rss_before_mb": rss_before,
+        "rss_after_mb": rss_after,
+        "rss_delta_mb": rss_after - rss_before,
+    }
+    return idx, build_info
+
+
+def sweep_ef(
+    idx,
+    queries: np.ndarray,
+    ground_truth: np.ndarray,
+    k: int,
+    ef_values: list[int],
+) -> list[dict]:
+    n_queries = len(queries)
+    print(f"\n--- k={k} ---")
+
     results = []
     for ef in ef_values:
         idx.set_ef(ef)
 
-        # Warmup
         n_warmup = max(5, n_queries // 10)
         for i in range(n_warmup):
             idx.knn_query(queries[i % n_queries].reshape(1, -1), k=k)
 
-        # Measure: batch 10 queries per timing call to amortize overhead
         batch_size = min(10, n_queries)
         latencies = []
         all_labels = []
@@ -183,14 +193,15 @@ def bench_hnswlib(
                 all_labels.append(lbl)
             qi = batch_end
 
-        recall = compute_recall(ground_truth[:n_queries], np.array(all_labels))
+        gt_for_k = ground_truth[:n_queries, :k]
+        recall = compute_recall(gt_for_k, np.array(all_labels))
         lat = np.array(latencies)
         total_time_s = sum(latencies) / 1e6
 
         result = {
             "ef": ef,
             "mean_recall": float(recall),
-            "qps": float(len(queries) / total_time_s) if total_time_s > 0 else 0,
+            "qps": float(n_queries / total_time_s) if total_time_s > 0 else 0,
             "mean_latency_us": float(np.mean(lat)),
             "stddev_us": float(np.std(lat)),
             "p50_latency_us": float(np.percentile(lat, 50)),
@@ -205,40 +216,19 @@ def bench_hnswlib(
             f"p50={result['p50_latency_us']:.0f}us p99={result['p99_latency_us']:.0f}us"
         )
 
-    return {
-        "benchmark": "ann_recall_vs_qps",
-        "implementation": "hnswlib",
-        "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
-        "system": get_system_metadata(),
-        "params": {
-            "n": n,
-            "dim": dim,
-            "metric": metric_name,
-            "k": k,
-            "n_queries": n_queries,
-            "seed": seed,
-            "hnsw_params": {
-                "m": M,
-                "m_max": M,
-                "ef_construction": ef_construction,
-            },
-        },
-        "build": {
-            "time_s": build_time,
-            "vectors_per_second": n / build_time,
-            "rss_before_mb": rss_before,
-            "rss_after_mb": rss_after,
-            "rss_delta_mb": rss_after - rss_before,
-        },
-        "results": results,
-    }
+    return results
 
 
 def main():
     parser = argparse.ArgumentParser(description="hnswlib benchmark comparison")
     parser.add_argument("--n", type=int, default=10000)
     parser.add_argument("--dim", type=int, default=128)
-    parser.add_argument("--k", type=int, default=10)
+    parser.add_argument(
+        "--k",
+        type=str,
+        default="10",
+        help="Comma-separated k values (default: 10)",
+    )
     parser.add_argument("--queries", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="bench_results")
@@ -273,27 +263,32 @@ def main():
     m_values = [int(x) for x in args.m.split(",")]
     ef_c_values = [int(x) for x in args.ef_construction.split(",")]
     ef_values = [int(x) for x in args.ef_values.split(",")]
+    k_values = [int(x) for x in args.k.split(",")]
 
-    # Load dataset if specified
     data = None
     queries_data = None
-    ground_truth = None
+    ground_truth_full = None
     actual_dim = args.dim
+    dataset_metric = None
 
     if args.dataset:
         dataset_dir = Path(args.dataset)
         base_path = dataset_dir / "base.fbin"
         query_path = dataset_dir / "queries.fbin"
         gt_path = dataset_dir / "groundtruth.ibin"
+        meta_path = dataset_dir / "metadata.txt"
 
         if not base_path.exists():
             print(f"Error: {base_path} not found", file=sys.stderr)
             sys.exit(1)
 
+        meta = load_metadata(str(meta_path))
+        dataset_metric = meta.get("metric")
+
         print(f"Loading dataset from {dataset_dir}...")
         data = load_fbin(str(base_path))
         actual_dim = data.shape[1]
-        args.n = min(args.n, data.shape[0]) if args.n < data.shape[0] else data.shape[0]
+        args.n = min(args.n, data.shape[0])
         data = data[: args.n]
         print(f"  Base vectors: {data.shape}")
 
@@ -304,38 +299,78 @@ def main():
             print(f"  Query vectors: {queries_data.shape}")
 
         if gt_path.exists():
-            ground_truth = load_ibin(str(gt_path))
-            ground_truth = ground_truth[: args.queries, : args.k]
-            print(f"  Ground truth: {ground_truth.shape}")
+            ground_truth_full = load_ibin(str(gt_path))
+            ground_truth_full = ground_truth_full[: args.queries]
+            print(f"  Ground truth: {ground_truth_full.shape}")
 
-    metrics = ["cosine", "l2"]
+    if dataset_metric == "euclidean":
+        metrics = ["l2"]
+    elif dataset_metric == "angular":
+        metrics = ["cosine"]
+    else:
+        metrics = ["cosine", "l2"]
 
     for metric in metrics:
         for M in m_values:
             for ef_c in ef_c_values:
-                result = bench_hnswlib(
+                q = queries_data
+                if q is None:
+                    q = generate_dataset(args.queries, actual_dim, args.seed + 99)
+
+                idx, build_info = build_hnswlib_index(
                     n=args.n,
                     dim=actual_dim,
-                    k=args.k,
-                    seed=args.seed,
-                    ef_values=ef_values,
                     metric_name=metric,
-                    n_queries=args.queries,
                     M=M,
                     ef_construction=ef_c,
+                    seed=args.seed,
                     data=data,
-                    queries=queries_data,
-                    ground_truth=ground_truth,
                 )
 
-                filename = os.path.join(
-                    args.output,
-                    f"hnswlib_{metric}_{args.n}_{actual_dim}d_m{M}_efc{ef_c}_{result['timestamp']}.json",
-                )
-                with open(filename, "w") as f:
-                    json.dump(result, f, indent=2)
-                    f.write("\n")
-                print(f"Results written to {filename}")
+                gt = ground_truth_full
+                if gt is None:
+                    gt_metric = "cosine" if metric == "cosine" else "l2"
+                    max_k = max(k_values)
+                    print(f"computing ground truth (k={max_k})...", flush=True)
+                    gt = brute_force_knn(
+                        data if data is not None else generate_dataset(args.n, actual_dim, args.seed),
+                        q, max_k, gt_metric,
+                    )
+
+                for k in k_values:
+                    results = sweep_ef(idx, q, gt, k, ef_values)
+
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output = {
+                        "benchmark": "ann_recall_vs_qps",
+                        "implementation": "hnswlib",
+                        "timestamp": ts,
+                        "system": get_system_metadata(),
+                        "params": {
+                            "n": args.n,
+                            "dim": actual_dim,
+                            "metric": metric,
+                            "k": k,
+                            "n_queries": args.queries,
+                            "seed": args.seed,
+                            "hnsw_params": {
+                                "m": M,
+                                "m_max": M,
+                                "ef_construction": ef_c,
+                            },
+                        },
+                        "build": build_info,
+                        "results": results,
+                    }
+
+                    filename = os.path.join(
+                        args.output,
+                        f"hnswlib_{metric}_{args.n}_{actual_dim}d_k{k}_m{M}_efc{ef_c}_{ts}.json",
+                    )
+                    with open(filename, "w") as f:
+                        json.dump(output, f, indent=2)
+                        f.write("\n")
+                    print(f"Results written to {filename}")
 
     print("\nDone.")
 

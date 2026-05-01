@@ -79,15 +79,24 @@ def download_file(url: str, dest: str) -> None:
     print(f"  Downloading {url}...")
     tmp = dest + ".tmp"
 
-    def reporthook(block_num, block_size, total_size):
-        downloaded = block_num * block_size
-        if total_size > 0:
-            pct = min(100, downloaded * 100 // total_size)
-            mb = downloaded / (1024 * 1024)
-            total_mb = total_size / (1024 * 1024)
-            print(f"\r  {mb:.1f}/{total_mb:.1f} MB ({pct}%)", end="", flush=True)
-
-    urllib.request.urlretrieve(url, tmp, reporthook)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (gvecdb benchmark downloader)"
+    })
+    with urllib.request.urlopen(req) as resp:
+        total_size = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+        with open(tmp, "wb") as f:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total_size > 0:
+                    pct = min(100, downloaded * 100 // total_size)
+                    mb = downloaded / (1024 * 1024)
+                    total_mb = total_size / (1024 * 1024)
+                    print(f"\r  {mb:.1f}/{total_mb:.1f} MB ({pct}%)", end="", flush=True)
     print()
     os.rename(tmp, dest)
 

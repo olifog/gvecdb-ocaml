@@ -25,6 +25,12 @@
  (libraries bench_common gvecdb yojson test_schemas capnp bigstringaf stdint unix))
 
 (executable
- (name bench_perf)
- (modules bench_perf)
- (libraries bench_common gvecdb bigstringaf unix))
+ (name bench_crash)
+ (modules bench_crash)
+ (libraries bench_common gvecdb yojson bigstringaf unix))
+
+(executable
+ (name bench_concurrent)
+ (modules bench_concurrent)
+ (ocamlopt_flags (:standard -alert -do_not_spawn_domains -alert -unsafe_multidomain))
+ (libraries bench_common gvecdb yojson bigstringaf unix))

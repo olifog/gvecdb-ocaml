@@ -134,6 +134,40 @@ let load_fbin path =
     ) in
     (vectors, dim))
 
+let load_ibin path =
+  let ic = open_in_bin path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+    let buf4 = Bytes.create 4 in
+    let read_int32 () =
+      really_input ic buf4 0 4;
+      Int32.to_int (Bytes.get_int32_le buf4 0)
+    in
+    let n = read_int32 () in
+    let k = read_int32 () in
+    let row_buf = Bytes.create (k * 4) in
+    let gt = Array.init n (fun _ ->
+      really_input ic row_buf 0 (k * 4);
+      Array.init k (fun j -> Bytes.get_int32_le row_buf (j * 4) |> Int32.to_int)
+    ) in
+    (gt, k))
+
+let load_dataset_metadata path =
+  if Sys.file_exists path then begin
+    let ic = open_in path in
+    let tbl = Hashtbl.create 8 in
+    Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      try while true do
+        let line = input_line ic in
+        match String.split_on_char ':' line with
+        | key :: rest ->
+            let value = String.trim (String.concat ":" rest) in
+            Hashtbl.replace tbl (String.trim key) value
+        | _ -> ()
+      done with End_of_file -> ());
+    tbl
+  end else
+    Hashtbl.create 0
+
 (** {1 Memory measurement} *)
 
 let parse_proc_status_field name =
