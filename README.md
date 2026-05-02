@@ -4,27 +4,58 @@
 
 This is a Part II project for the Computer Science Tripos at the University of Cambridge. Please see the [proposal doc](proposal.pdf) for full context!
 
+## Overview
+
+gvecdb is a hybrid graph-vector database combining:
+
+- **LMDB** for durable graph storage (nodes, edges, adjacency indices, properties)
+- **HNSW** approximate nearest neighbor index with MVCC persistence
+- **Cap'n Proto** for schema-aware zero-copy property storage and RPC
+- **Native float32 SIMD** via OxCaml's unboxed types and AVX intrinsics
+
+It can be used as an embedded OCaml library or as a standalone Cap'n Proto RPC server.
+
 ## Project Structure
 
 - `lib/` - core library
+  - `gvecdb.ml/.mli` - public API
   - `types.ml` - core type definitions and database handle
   - `keys.ml` - bigstring key encoding/decoding for LMDB
   - `store.ml` - low-level LMDB operations
-  - `bigstring_storage.ml` - MessageStorage implementation for bigstrings
-  - `bigstring_message.ml` - CapnProto message backed by bigstrings
-  - `props_capnp.ml/.mli` - property operations using CapnProto
-  - `gvecdb.ml/.mli` - public API
-- `bin/` - example executables
-  - `example.ml` - full working example demonstrating the API
-  - `main.ml` - CLI tool (placeholder)
-- `test/` - unit tests
-- `test_schemas/` - example CapnProto schemas for testing
-- `reports/` - weekly progress reports and design decisions
+  - `float32_vec.ml` - SIMD float32 distance computation
+  - `vector_file.ml` - append-only mmap'd vector storage
+  - `hnsw.ml` - HNSW parameters
+  - `hnsw_page.ml` - HNSW node page layout and serialization
+  - `hnsw_mvcc.ml` - HNSW MVCC persistence layer
+  - `knn.ml` - brute-force k-NN search
+  - `schema_registry.ml` - runtime schema registration and persistence
+  - `dynamic_reader.ml` - read Cap'n Proto fields by name at runtime
+  - `filter.ml` - property-based edge filtering
+  - `props_capnp.ml` - schema metadata storage
+  - `bitset.ml`, `int_heap.ml`, `int_topk.ml` - data structures for search
+  - `msync.ml` / `msync_stubs.c` - mmap flush bindings
+- `server/` - Cap'n Proto RPC server
+  - `gvecdb_api.capnp` - RPC schema
+  - `gvecdb_service.ml` - server implementation
+  - `gvecdb_client.ml` - client wrapper
+  - `main.ml` - server entry point
+- `test/` - test suite
+- `bench/` - benchmarks (ANN recall/QPS, insertion, graph ops, crash recovery, concurrency)
+- `scripts/` - benchmark runners, dataset downloaders, plotting
+- `test_schemas/` - Cap'n Proto schemas for testing
+- `reports/` - progress reports and design decisions
 - `vendor/` - vendored dependencies (ocaml-lmdb)
+- `demo/` - arXiv Explorer full-stack demo app
 
 ## Quick Start
 
-### Prereqs
+### Prerequisites
+
+**OxCaml**: 
+
+```bash
+opam switch create 5.2.0+ox ocaml-variants.5.2.0+ox
+```
 
 **System dependencies** (C libraries):
 
@@ -42,7 +73,7 @@ sudo pacman -S lmdb capnproto pkgconf
 **OCaml dependencies**:
 
 ```bash
-opam install capnp bigstringaf stdint alcotest
+opam install . --deps-only --with-test -y
 ```
 
 ### Clone
@@ -61,24 +92,21 @@ git submodule update --init
 dune build
 ```
 
-### Run Example
+### Run Tests
 
 ```bash
-dune exec bin/example.exe
+dune runtest
 ```
 
-This creates a simple graph with person nodes and knows/likes edges, demonstrating:
+### Run Server
 
-- creating nodes with string type names
-- creating edges with string type names
-- setting and getting properties using CapnProto schemas
-- querying edges and getting full edge information (type, src, dst)
-- string interning happens automatically under the hood
-- persistence across runs
+```bash
+dune exec server/main.exe -- --db /path/to/my.db
+```
 
-### Use as a Library
+## Use as a Library
 
-First, define your schemas in CapnProto format (e.g., `schemas.capnp`):
+Define your schemas in Cap'n Proto format (e.g., `schemas.capnp`):
 
 ```capnp
 struct Person {
@@ -93,89 +121,77 @@ struct Knows {
 }
 ```
 
-Then compile them in your dune file and use in OCaml:
+Compile them in your dune file and use in OCaml:
 
 ```ocaml
 (* in your dune file: (libraries gvecdb capnp) *)
 
-(* BytesMessage for building, Bigstring_message for reading *)
 module SchemaBuilder = Schemas.Make(Capnp.BytesMessage)
-module SchemaReader = Schemas.Make(Gvecdb.Bigstring_message)
 
-let db = Gvecdb.create "/path/to/db" in
+let () =
+  let db = match Gvecdb.create "/path/to/db" with
+    | Ok db -> db
+    | Error e -> failwith (Gvecdb.Error.to_string e)
+  in
 
-(* register your schemas *)
-Gvecdb.register_node_schema_capnp db "person" 0xYOURSCHEMAID;
-Gvecdb.register_edge_schema_capnp db "knows" 0xYOURSCHEMAID;
+  (* register schemas for dynamic field access and filtering *)
+  let _ = Gvecdb.register_schema_from_capnp db
+    ~kind:Gvecdb.Schema_registry.NodeSchemaKind
+    ~type_name:"person" ~capnp_path:"schemas.capnp"
+    ~struct_name:"Person" () in
 
-(* create nodes *)
-let alice = Gvecdb.create_node db "person" in
-let bob = Gvecdb.create_node db "person" in
+  (* create nodes *)
+  let alice = match Gvecdb.create_node db "person" with
+    | Ok id -> id | Error e -> failwith (Gvecdb.Error.to_string e) in
+  let bob = match Gvecdb.create_node db "person" with
+    | Ok id -> id | Error e -> failwith (Gvecdb.Error.to_string e) in
 
-(* set properties using CapnProto builder *)
-Gvecdb.set_node_props_capnp db alice "person"
-  (fun builder ->
-    SchemaBuilder.Builder.Person.name_set builder "Alice";
-    SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
-    SchemaBuilder.Builder.Person.email_set builder "alice@example.com")
-  SchemaBuilder.Builder.Person.init_root
-  SchemaBuilder.Builder.Person.to_message;
+  (* set properties as serialized Cap'n Proto bytes *)
+  let builder = SchemaBuilder.Builder.Person.init_root () in
+  SchemaBuilder.Builder.Person.name_set builder "Alice";
+  SchemaBuilder.Builder.Person.age_set_int_exn builder 30;
+  let msg = SchemaBuilder.Builder.Person.to_message builder in
+  let bs = (* serialize msg to bigstring *) in
+  ignore (Gvecdb.set_node_props db alice "person" bs);
 
-(* get properties - reads directly from mmap *)
-let name = Gvecdb.get_node_props_capnp db alice
-  SchemaReader.Reader.Person.of_message
-  SchemaReader.Reader.Person.name_get in
-Printf.printf "Name: %s\n" name;
+  (* create edges *)
+  ignore (Gvecdb.create_edge db "knows" alice bob);
 
-(* create edges *)
-let edge = Gvecdb.create_edge db "knows" alice bob in
+  (* query edges *)
+  let edges = match Gvecdb.get_outbound_edges db alice () with
+    | Ok es -> es | Error _ -> [] in
+  List.iter (fun (e : Gvecdb.edge_info) ->
+    Printf.printf "edge %Ld: [%s] %Ld -> %Ld\n"
+      e.id e.edge_type e.src e.dst
+  ) edges;
 
-(* set edge properties *)
-Gvecdb.set_edge_props_capnp db edge "knows"
-  (fun builder ->
-    SchemaBuilder.Builder.Knows.since_set builder 2020L;
-    SchemaBuilder.Builder.Knows.strength_set builder 0.9)
-  SchemaBuilder.Builder.Knows.init_root
-  SchemaBuilder.Builder.Knows.to_message;
+  (* add vectors and search *)
+  ignore (Gvecdb.with_transaction db (fun txn ->
+    let vec = Gvecdb.Float32_vec.of_array [| 1.0; 0.5; 0.3 |] in
+    ignore (Gvecdb.create_vector db ~txn Node alice "embedding" vec)));
 
-(* query edges - returns edge_info records with full details *)
-let edges = Gvecdb.get_outbound_edges db alice in
-List.iter (fun edge_info ->
-  Printf.printf "edge %Ld: [%s] %Ld -> %Ld\n"
-    edge_info.id edge_info.edge_type edge_info.src edge_info.dst
-) edges;
+  (* read fields dynamically by name *)
+  (match Gvecdb.read_node_field db alice "age" with
+   | Ok (Gvecdb.Dynamic_reader.V_uint32 age) ->
+       Printf.printf "age: %ld\n" age
+   | _ -> ());
 
-(* edge metadata is preserved even after setting properties *)
-match Gvecdb.get_edge_info db edge with
-| Some info -> Printf.printf "Found: %Ld -[%s]-> %Ld\n" 
-                 info.src info.edge_type info.dst
-| None -> print_endline "Edge not found";
-
-Gvecdb.close db
+  Gvecdb.close db
 ```
 
-## Testing
-
-```bash
-dune runtest
-```
-
-### Coverage
+## Coverage
 
 To generate a coverage report locally:
 
 ```bash
-# Run tests with coverage instrumentation
 mkdir -p _coverage
 dune build --instrument-with bisect_ppx
-BISECT_FILE=$PWD/_coverage/bisect dune exec test/test_basic.exe
-BISECT_FILE=$PWD/_coverage/bisect dune exec test/test_transactions.exe
-BISECT_FILE=$PWD/_coverage/bisect dune exec test/test_zerocopy.exe
-BISECT_FILE=$PWD/_coverage/bisect dune exec test/test_keys.exe
-BISECT_FILE=$PWD/_coverage/bisect dune exec test/test_adjacency.exe
+for test in test_basic test_vectors test_hnsw test_hnsw_mvcc \
+            test_adjacency test_transactions test_schema_filter \
+            test_integration; do
+  BISECT_FILE=$PWD/_coverage/bisect dune exec test/${test}.exe
+done
 
-# Generate reports
 bisect-ppx-report summary --coverage-path _coverage
 bisect-ppx-report html --coverage-path _coverage -o _coverage/html
-# Open _coverage/html/index.html in your browser
 ```

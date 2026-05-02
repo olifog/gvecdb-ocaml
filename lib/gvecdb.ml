@@ -6,7 +6,6 @@ type edge_id = Types.edge_id
 type vector_id = Types.vector_id
 type vector_tag_id = Types.vector_tag_id
 type owner_kind = Types.owner_kind = Node | Edge
-
 type node_info = Types.node_info = { id : node_id; node_type : string }
 
 type edge_info = Types.edge_info = {
@@ -152,7 +151,7 @@ let reconcile_hnsw t tag_name =
         ~finally:(fun () -> Hnsw_mvcc.end_read mvcc table)
         (fun () ->
           let node_count = Hnsw_mvcc.table_node_count table in
-          if node_count > 0 then begin
+          if node_count > 0 then (
             let lmdb_slots =
               match tag_id_opt with
               | None -> Hashtbl.create 0
@@ -186,9 +185,13 @@ let reconcile_hnsw t tag_name =
                   incr n_restore
               | _ -> ()
             done;
-            if !changed then begin
-              Printf.eprintf "gvecdb: reconcile tag=%s: %d orphans soft-deleted, %d restored (hnsw_nodes=%d lmdb_slots=%d)\n%!"
-                tag_name !n_orphan !n_restore node_count (Hashtbl.length lmdb_slots);
+            if !changed then (
+              Printf.eprintf
+                "gvecdb: reconcile tag=%s: %d orphans soft-deleted, %d \
+                 restored (hnsw_nodes=%d lmdb_slots=%d)\n\
+                 %!"
+                tag_name !n_orphan !n_restore node_count
+                (Hashtbl.length lmdb_slots);
               (* find entry point among non-orphan nodes only *)
               let best_ep = ref (-1) in
               let best_level = ref (-1) in
@@ -208,10 +211,8 @@ let reconcile_hnsw t tag_name =
               | Ok () -> ()
               | Error e ->
                   Printf.eprintf "reconcile_hnsw: commit failed: %s\n%!"
-                    (Hnsw_mvcc.error_to_string e)
-            end
-            else Hnsw_mvcc.rollback mvcc hnsw_txn
-          end)
+                    (Hnsw_mvcc.error_to_string e))
+            else Hnsw_mvcc.rollback mvcc hnsw_txn))
 
 let open_hnsw_mvcc_files t =
   let tags = get_all_vector_tags t.db in
@@ -223,17 +224,18 @@ let open_hnsw_mvcc_files t =
           Hashtbl.replace t.hnsw_mvcc tag_name mvcc;
           let hnsw_epoch = Hnsw_mvcc.get_epoch mvcc in
           let lmdb_epoch = get_lmdb_hnsw_epoch t.db tag_name in
-          if hnsw_epoch <> lmdb_epoch then begin
-            Printf.eprintf "gvecdb: epoch mismatch for tag=%s (hnsw=%Ld lmdb=%Ld), reconciling...\n%!"
+          if hnsw_epoch <> lmdb_epoch then (
+            Printf.eprintf
+              "gvecdb: epoch mismatch for tag=%s (hnsw=%Ld lmdb=%Ld), \
+               reconciling...\n\
+               %!"
               tag_name hnsw_epoch lmdb_epoch;
             reconcile_hnsw t tag_name;
             let current_epoch = Hnsw_mvcc.get_epoch mvcc in
             ignore
               (Types.with_transaction t.db (fun txn ->
-                   set_lmdb_hnsw_epoch t.db ~txn tag_name current_epoch))
-          end
-      | Error _ ->
-          ())
+                   set_lmdb_hnsw_epoch t.db ~txn tag_name current_epoch)))
+      | Error _ -> ())
     tags
 
 let create ?map_size path =
@@ -250,7 +252,6 @@ let close t =
       Hnsw_mvcc.close mvcc)
     t.hnsw_mvcc;
   Store.close t.db
-
 
 let get_edge_info (t : t) ?txn (edge_id : edge_id) : (edge_info, error) result =
   let* intern_id, src, dst = Props_capnp.get_edge_meta t.db ?txn edge_id in
@@ -376,9 +377,8 @@ let scan_adjacency_index (t : t) ?txn ~direction ~node_id
       Error (Storage_error (Format.asprintf "%a" Lmdb.pp_error code))
   | Invalid_argument msg -> Error (Corrupted_data msg)
 
-let filter_edges_with_predicates (t : t) ?txn
-    (edges : edge_info list) (filters : Filter.filter_predicate list) :
-    (edge_info list, error) result =
+let filter_edges_with_predicates (t : t) ?txn (edges : edge_info list)
+    (filters : Filter.filter_predicate list) : (edge_info list, error) result =
   if filters = [] then Ok edges
   else
     let pf_cache = Hashtbl.create 8 in
@@ -388,26 +388,28 @@ let filter_edges_with_predicates (t : t) ?txn
       | None ->
           let result =
             match Schema_registry.get_schema t.db ?txn et with
-            | Ok schema ->
-                (match Filter.prepare_filter schema filters with
-                 | Ok pf -> Some pf
-                 | Error _ -> None)
+            | Ok schema -> (
+                match Filter.prepare_filter schema filters with
+                | Ok pf -> Some pf
+                | Error _ -> None)
             | Error _ -> None
           in
           Hashtbl.replace pf_cache et result;
           result
     in
-    Ok (List.filter (fun (ei : edge_info) ->
-      match get_prepared ei.edge_type with
-      | None -> false
-      | Some pf ->
-          let key = Keys.encode_id_bs ei.id in
-          (try
-             let props_bs = Lmdb.Map.get t.db.edges ?txn key in
-             if Bigstring.length props_bs = 0 then false
-             else Filter.matches_blob props_bs pf
-           with Not_found | Lmdb.Not_found -> false))
-      edges)
+    Ok
+      (List.filter
+         (fun (ei : edge_info) ->
+           match get_prepared ei.edge_type with
+           | None -> false
+           | Some pf -> (
+               let key = Keys.encode_id_bs ei.id in
+               try
+                 let props_bs = Lmdb.Map.get t.db.edges ?txn key in
+                 if Bigstring.length props_bs = 0 then false
+                 else Filter.matches_blob props_bs pf
+               with Not_found | Lmdb.Not_found -> false))
+         edges)
 
 let get_adjacency_edges_internal (t : t) ?txn ~direction ~node_id
     (map : (bigstring, bigstring, [ `Uni ]) Lmdb.Map.t) ?edge_type () :
@@ -423,8 +425,8 @@ let get_adjacency_edges_internal (t : t) ?txn ~direction ~node_id
       let prefix = Keys.encode_adjacency_prefix_bs ~node_id () in
       scan_adjacency_index t ?txn ~direction ~node_id map prefix
 
-let get_outbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters ()
-    : (edge_info list, error) result =
+let get_outbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters () :
+    (edge_info list, error) result =
   let* edges =
     get_adjacency_edges_internal t ?txn ~direction:Outbound ~node_id
       t.db.outbound ?edge_type ()
@@ -433,11 +435,11 @@ let get_outbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters ()
   | Some f when f <> [] -> filter_edges_with_predicates t ?txn edges f
   | _ -> Ok edges
 
-let get_inbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters ()
-    : (edge_info list, error) result =
+let get_inbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters () :
+    (edge_info list, error) result =
   let* edges =
-    get_adjacency_edges_internal t ?txn ~direction:Inbound ~node_id
-      t.db.inbound ?edge_type ()
+    get_adjacency_edges_internal t ?txn ~direction:Inbound ~node_id t.db.inbound
+      ?edge_type ()
   in
   match filters with
   | Some f when f <> [] -> filter_edges_with_predicates t ?txn edges f
@@ -446,23 +448,25 @@ let get_inbound_edges (t : t) ?txn (node_id : node_id) ?edge_type ?filters ()
 let make_compute_distance_hnsw mmap metric query_f32 query_norm dim =
   let metric_int = Types.metric_to_int metric in
   fun vec_off ->
-    Float32_vec.dist_from_header mmap ~vec_off query_f32
-      ~query_norm ~metric:metric_int ~dim
+    Float32_vec.dist_from_header mmap ~vec_off query_f32 ~query_norm
+      ~metric:metric_int ~dim
 
 let make_dist_from_inline metric query_f32 query_norm dim =
   let metric_int = Types.metric_to_int metric in
   fun (iv : bigstring) ->
-    Float32_vec.dist_from_header iv ~vec_off:0 query_f32
-      ~query_norm ~metric:metric_int ~dim
+    Float32_vec.dist_from_header iv ~vec_off:0 query_f32 ~query_norm
+      ~metric:metric_int ~dim
 
 let build_inline_vec ~normalized (store_data : bigstring) (norm : float) =
   let dim = Bigstringaf.length store_data / 4 in
-  let total = Vector_file.vec_header_size + dim * 4 in
+  let total = Vector_file.vec_header_size + (dim * 4) in
   let bs = Bigstringaf.create total in
   Bigstringaf.set_int32_le bs 0 (Int32.of_int dim);
   let flags = if normalized then 0x01 else 0x00 in
   Bigstringaf.set bs 4 (Char.chr flags);
-  for i = 0 to 2 do Bigstringaf.set bs (5 + i) '\x00' done;
+  for i = 0 to 2 do
+    Bigstringaf.set bs (5 + i) '\x00'
+  done;
   Bigstringaf.set_int64_le bs 8 (Int64.bits_of_float norm);
   Bigstringaf.blit store_data ~src_off:0 bs ~dst_off:Vector_file.vec_header_size
     ~len:(dim * 4);
@@ -473,10 +477,14 @@ let make_pairwise_distance_inline metric dim =
   let vec_data_off = Vector_file.vec_header_size in
   fun (buf_a : bigstring) (off_a : int) (buf_b : bigstring) (off_b : int) ->
     let data_len = dim * 4 in
-    let query_f32 = Bigstringaf.sub buf_a ~off:(off_a + vec_data_off) ~len:data_len in
-    let query_norm = Int64.float_of_bits (Bigstringaf.get_int64_le buf_a (off_a + 8)) in
-    Float32_vec.dist_from_header buf_b ~vec_off:off_b query_f32
-      ~query_norm ~metric:metric_int ~dim
+    let query_f32 =
+      Bigstringaf.sub buf_a ~off:(off_a + vec_data_off) ~len:data_len
+    in
+    let query_norm =
+      Int64.float_of_bits (Bigstringaf.get_int64_le buf_a (off_a + 8))
+    in
+    Float32_vec.dist_from_header buf_b ~vec_off:off_b query_f32 ~query_norm
+      ~metric:metric_int ~dim
 
 let get_or_create_hnsw_mvcc t ?(metric = Cosine)
     ?(hnsw_params = Hnsw.default_params) vector_tag =
@@ -484,9 +492,7 @@ let get_or_create_hnsw_mvcc t ?(metric = Cosine)
   | Some f -> Some f
   | None -> (
       let file_path = Store.hnsw_file_path t.db_path vector_tag ^ ".mvcc" in
-      match
-        Hnsw_mvcc.create file_path ~metric ~params:hnsw_params ()
-      with
+      match Hnsw_mvcc.create file_path ~metric ~params:hnsw_params () with
       | Error _ -> None
       | Ok f ->
           Hashtbl.replace t.hnsw_mvcc vector_tag f;
@@ -494,8 +500,7 @@ let get_or_create_hnsw_mvcc t ?(metric = Cosine)
 
 let create_vector_internal (t : t) ~txn ~normalize ~metric ?hnsw_params
     (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
-    (data : bigstring) :
-    (vector_id, error) result =
+    (data : bigstring) : (vector_id, error) result =
   let* vector_tag_id = Store.intern t.db ~txn vector_tag in
   let dim = Float32_vec.dim data in
   let store_data, norm =
@@ -532,8 +537,8 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric ?hnsw_params
                   let metric = Hnsw_mvcc.get_metric mvcc in
                   let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                   let compute_distance =
-                    make_compute_distance_hnsw hnsw_mmap metric
-                      query_f32 query_norm dim
+                    make_compute_distance_hnsw hnsw_mmap metric query_f32
+                      query_norm dim
                   in
                   let dist_from_inline =
                     make_dist_from_inline metric query_f32 query_norm dim
@@ -547,8 +552,8 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric ?hnsw_params
 
                   let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
                   match
-                    Hnsw_mvcc.insert_mvcc mvcc hnsw_txn ~vector_id
-                      ~inline_vec ~compute_distance ~dist_from_inline
+                    Hnsw_mvcc.insert_mvcc mvcc hnsw_txn ~vector_id ~inline_vec
+                      ~compute_distance ~dist_from_inline
                       ~compute_pairwise_distance:pairwise_distance
                       ~dimension:dim
                   with
@@ -589,9 +594,9 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric ?hnsw_params
                               Lmdb.Map.set t.db.hnsw_slots ~txn slot_key
                                 (Keys.encode_hnsw_slot_value slot_id);
                               vector_id))))))
+
 let create_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
-    ?hnsw_params
-    (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
+    ?hnsw_params (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
     (data : bigstring) : (vector_id, error) result =
   let* exists =
     match owner_kind with
@@ -695,13 +700,12 @@ let delete_vector_internal (t : t) ?txn (vector_id : vector_id) :
                     in
                     let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
                     Hnsw_mvcc.write_node mvcc hnsw_txn ~slot_id deleted_node;
-                    if slot_id = Hnsw_mvcc.table_entry_point table then begin
-                      let ep, level =
-                        find_best_entry_point mvcc table ~exclude_slot:slot_id
-                      in
-                      Hnsw_mvcc.set_entry_point hnsw_txn ~entry_point:ep
-                        ~max_level:level
-                    end;
+                    (if slot_id = Hnsw_mvcc.table_entry_point table then
+                       let ep, level =
+                         find_best_entry_point mvcc table ~exclude_slot:slot_id
+                       in
+                       Hnsw_mvcc.set_entry_point hnsw_txn ~entry_point:ep
+                         ~max_level:level);
                     match Hnsw_mvcc.commit mvcc hnsw_txn with
                     | Ok () ->
                         set_lmdb_hnsw_epoch t.db ?txn vector_tag
@@ -860,7 +864,7 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
           ~finally:(fun () -> Hnsw_mvcc.end_read mvcc table)
           (fun () ->
             if Hnsw_mvcc.table_entry_point table < 0 then Ok []
-            else begin
+            else
               let dim = Array.length query in
               let index_dim = Hnsw_mvcc.get_dimension mvcc in
               if index_dim > 0 && dim <> index_dim then
@@ -869,7 +873,7 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
                      (Printf.sprintf
                         "query dimension mismatch: index has %d, query has %d"
                         index_dim dim))
-              else begin
+              else
                 let query_f32 = Float32_vec.of_array query in
                 let query_f32, query_norm = Float32_vec.normalize query_f32 in
                 let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
@@ -906,9 +910,7 @@ let knn_hnsw (t : t) ?txn ~metric ~k ~ef ~vector_tag query =
                           | Error _ -> None))
                     results
                 in
-                Ok results_with_info
-              end
-            end)
+                Ok results_with_info)
 
 let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
     ?(hnsw_params = Hnsw.default_params) ~vector_tag () =
@@ -939,18 +941,16 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
           let rec delete_matching () =
             try
               let key, _ = Lmdb.Cursor.next cursor in
-              if has_prefix key then begin
+              if has_prefix key then (
                 Lmdb.Cursor.remove cursor;
-                delete_matching ()
-              end
+                delete_matching ())
             with Lmdb.Not_found -> ()
           in
           try
             let key, _ = Lmdb.Cursor.seek_range cursor prefix in
-            if has_prefix key then begin
+            if has_prefix key then (
               Lmdb.Cursor.remove cursor;
-              delete_matching ()
-            end
+              delete_matching ())
           with Lmdb.Not_found -> ())
     with Not_found | Lmdb.Not_found | Lmdb.Error _ -> ()
   in
@@ -970,13 +970,12 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
   | None -> ());
   match Hnsw_mvcc.create file_path ~metric ~params:hnsw_params () with
   | Error e -> Error (Storage_error (Hnsw_mvcc.error_to_string e))
-  | Ok mvcc ->
+  | Ok mvcc -> (
       let vectors = get_all_vectors () in
-      if vectors = [] then begin
+      if vectors = [] then (
         Hashtbl.replace t.hnsw_mvcc vector_tag mvcc;
-        Ok ()
-      end
-      else begin
+        Ok ())
+      else
         let dim =
           match List.hd vectors with
           | _, offset -> (
@@ -986,17 +985,14 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
               | Ok (bs, _) -> Float32_vec.dim bs
               | Error _ -> 0)
         in
-        if dim = 0 then begin
+        if dim = 0 then (
           Hashtbl.replace t.hnsw_mvcc vector_tag mvcc;
-          Ok ()
-        end
-        else begin
+          Ok ())
+        else
           let batch_size = 100_000 in
           let hnsw_txn = ref (Hnsw_mvcc.begin_write mvcc) in
           let count = ref 0 in
-          let pairwise_distance =
-            make_pairwise_distance_inline metric dim
-          in
+          let pairwise_distance = make_pairwise_distance_inline metric dim in
           let result =
             List.fold_left
               (fun acc (vector_id, vector_offset) ->
@@ -1012,21 +1008,20 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
                         let query_f32, query_norm =
                           if Vector_file.is_normalized hdr then
                             (vec_bs, hdr.Vector_file.norm)
-                          else
-                            Float32_vec.normalize vec_bs
+                          else Float32_vec.normalize vec_bs
                         in
                         let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
                         let compute_distance =
-                          make_compute_distance_hnsw hnsw_mmap metric
-                            query_f32 query_norm dim
+                          make_compute_distance_hnsw hnsw_mmap metric query_f32
+                            query_norm dim
                         in
                         let dist_from_inline =
-                          make_dist_from_inline metric query_f32
-                            query_norm dim
+                          make_dist_from_inline metric query_f32 query_norm dim
                         in
                         let normalized = Vector_file.is_normalized hdr in
                         let inline_vec =
-                          build_inline_vec ~normalized vec_bs hdr.Vector_file.norm
+                          build_inline_vec ~normalized vec_bs
+                            hdr.Vector_file.norm
                         in
                         match
                           Hnsw_mvcc.insert_mvcc mvcc !hnsw_txn ~vector_id
@@ -1049,15 +1044,15 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
                                   (Keys.encode_hnsw_slot_value slot_id)
                             | None -> ());
                             incr count;
-                            if !count mod batch_size = 0 then begin
+                            if !count mod batch_size = 0 then (
                               match Hnsw_mvcc.commit mvcc !hnsw_txn with
                               | Error e ->
-                                  Error (Storage_error (Hnsw_mvcc.error_to_string e))
+                                  Error
+                                    (Storage_error (Hnsw_mvcc.error_to_string e))
                               | Ok () ->
                                   hnsw_txn := Hnsw_mvcc.begin_write mvcc;
-                                  Ok ()
-                            end else
-                              Ok ())))
+                                  Ok ())
+                            else Ok ())))
               (Ok ()) vectors
           in
           match result with
@@ -1075,16 +1070,14 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
                   set_lmdb_hnsw_epoch t.db ?txn vector_tag
                     (Hnsw_mvcc.get_epoch mvcc);
                   Hashtbl.replace t.hnsw_mvcc vector_tag mvcc;
-                  Ok ())
-        end
-      end
+                  Ok ()))
 
 module Schema_registry = Schema_registry
 module Dynamic_reader = Dynamic_reader
 module Filter = Filter
 
-let register_schema_from_capnp t ~kind ~type_name ~capnp_path ~struct_name
-    ?txn () =
+let register_schema_from_capnp t ~kind ~type_name ~capnp_path ~struct_name ?txn
+    () =
   Schema_registry.register_schema_from_capnp t.db ~kind ~type_name ~capnp_path
     ~struct_name ?txn ()
 
@@ -1093,11 +1086,8 @@ let register_schema_from_fields t ~kind ~type_name ~data_word_count
   Schema_registry.register_schema_from_fields t.db ~kind ~type_name
     ~data_word_count ~pointer_count ~fields ?txn ()
 
-let get_schema t ?txn type_name =
-  Schema_registry.get_schema t.db ?txn type_name
-
-let load_all_schemas t =
-  Schema_registry.load_all_schemas t.db
+let get_schema t ?txn type_name = Schema_registry.get_schema t.db ?txn type_name
+let load_all_schemas t = Schema_registry.load_all_schemas t.db
 
 let lmdb_get_or_corrupted map ?txn key msg =
   try Ok (Lmdb.Map.get map ?txn key)
@@ -1108,45 +1098,53 @@ let read_node_field t ?txn node_id field_name =
   let* exists = node_exists t ?txn node_id in
   if not exists then Error (Node_not_found node_id)
   else
-  let* meta_bs = lmdb_get_or_corrupted t.db.node_meta ?txn key
-      "node_meta missing for existing node" in
-  let intern_id = Keys.decode_id_bs meta_bs in
-  let* type_name =
-    try Ok (Store.unintern t.db ?txn intern_id)
-    with Not_found | Lmdb.Not_found ->
-      Error (Corrupted_data "intern reverse lookup failed")
-  in
-  let* schema = get_schema t ?txn type_name in
-  let* props_bs = lmdb_get_or_corrupted t.db.nodes ?txn key
-      "node props missing for existing node" in
-  Dynamic_reader.read_field_by_name props_bs schema field_name
+    let* meta_bs =
+      lmdb_get_or_corrupted t.db.node_meta ?txn key
+        "node_meta missing for existing node"
+    in
+    let intern_id = Keys.decode_id_bs meta_bs in
+    let* type_name =
+      try Ok (Store.unintern t.db ?txn intern_id)
+      with Not_found | Lmdb.Not_found ->
+        Error (Corrupted_data "intern reverse lookup failed")
+    in
+    let* schema = get_schema t ?txn type_name in
+    let* props_bs =
+      lmdb_get_or_corrupted t.db.nodes ?txn key
+        "node props missing for existing node"
+    in
+    Dynamic_reader.read_field_by_name props_bs schema field_name
 
 let read_edge_field t ?txn edge_id field_name =
   let key = Keys.encode_id_bs edge_id in
   let* exists = edge_exists t ?txn edge_id in
   if not exists then Error (Edge_not_found edge_id)
   else
-  let* props_bs = lmdb_get_or_corrupted t.db.edges ?txn key
-      "edge props missing for existing edge" in
-  let* meta_bs = lmdb_get_or_corrupted t.db.edge_meta ?txn key
-      "edge_meta missing for existing edge" in
-  let intern_id, _, _ = Keys.decode_edge_meta meta_bs in
-  let* type_name =
-    try Ok (Store.unintern t.db ?txn intern_id)
-    with Not_found | Lmdb.Not_found ->
-      Error (Corrupted_data "intern reverse lookup failed")
-  in
-  let* schema = get_schema t ?txn type_name in
-  Dynamic_reader.read_field_by_name props_bs schema field_name
+    let* props_bs =
+      lmdb_get_or_corrupted t.db.edges ?txn key
+        "edge props missing for existing edge"
+    in
+    let* meta_bs =
+      lmdb_get_or_corrupted t.db.edge_meta ?txn key
+        "edge_meta missing for existing edge"
+    in
+    let intern_id, _, _ = Keys.decode_edge_meta meta_bs in
+    let* type_name =
+      try Ok (Store.unintern t.db ?txn intern_id)
+      with Not_found | Lmdb.Not_found ->
+        Error (Corrupted_data "intern reverse lookup failed")
+    in
+    let* schema = get_schema t ?txn type_name in
+    Dynamic_reader.read_field_by_name props_bs schema field_name
 
-let get_node_props (t : t) ?txn (node_id : node_id) :
-    (bigstring, error) result =
+let get_node_props (t : t) ?txn (node_id : node_id) : (bigstring, error) result
+    =
   let key = Keys.encode_id_bs node_id in
   try Ok (Lmdb.Map.get t.db.nodes ?txn key)
   with Not_found | Lmdb.Not_found -> Error (Node_not_found node_id)
 
-let get_edge_props (t : t) ?txn (edge_id : edge_id) :
-    (bigstring, error) result =
+let get_edge_props (t : t) ?txn (edge_id : edge_id) : (bigstring, error) result
+    =
   let key = Keys.encode_id_bs edge_id in
   try Ok (Lmdb.Map.get t.db.edges ?txn key)
   with Not_found | Lmdb.Not_found -> Error (Edge_not_found edge_id)
@@ -1156,19 +1154,18 @@ let set_node_props (t : t) ?txn (node_id : node_id) (type_name : string)
   let* exists = node_exists t ?txn node_id in
   if not exists then Error (Node_not_found node_id)
   else
-  let* intern_id = Store.intern t.db ?txn type_name in
-  Types.wrap_lmdb_exn (fun () ->
-      let key = Keys.encode_id_bs node_id in
-      Lmdb.Map.set t.db.node_meta ?txn key (Keys.encode_id_bs intern_id);
-      Lmdb.Map.set t.db.nodes ?txn key data)
+    let* intern_id = Store.intern t.db ?txn type_name in
+    Types.wrap_lmdb_exn (fun () ->
+        let key = Keys.encode_id_bs node_id in
+        Lmdb.Map.set t.db.node_meta ?txn key (Keys.encode_id_bs intern_id);
+        Lmdb.Map.set t.db.nodes ?txn key data)
 
 let set_edge_props (t : t) ?txn (edge_id : edge_id) (data : bigstring) :
     (unit, error) result =
   let key = Keys.encode_id_bs edge_id in
   let* exists = edge_exists t ?txn edge_id in
   if not exists then Error (Edge_not_found edge_id)
-  else
-  Types.wrap_lmdb_exn (fun () -> Lmdb.Map.set t.db.edges ?txn key data)
+  else Types.wrap_lmdb_exn (fun () -> Lmdb.Map.set t.db.edges ?txn key data)
 
 module Types = Types
 module Hnsw_page = Hnsw_page

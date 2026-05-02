@@ -18,12 +18,11 @@ let cleanup_db_files path =
   (try Sys.remove (base ^ ".vectors") with _ -> ());
   let hnsw_dir = base ^ ".hnsw" in
   try
-    if Sys.file_exists hnsw_dir && Sys.is_directory hnsw_dir then begin
+    if Sys.file_exists hnsw_dir && Sys.is_directory hnsw_dir then (
       Array.iter
         (fun f -> try Sys.remove (Filename.concat hnsw_dir f) with _ -> ())
         (Sys.readdir hnsw_dir);
-      Unix.rmdir hnsw_dir
-    end
+      Unix.rmdir hnsw_dir)
   with _ -> ()
 
 let with_temp_db prefix f =
@@ -37,26 +36,32 @@ let with_temp_db prefix f =
     (fun () -> f db)
 
 let find_capnp_path () =
-  let candidates = [
-    "test_schemas/schemas.capnp";
-    "../test_schemas/schemas.capnp";
-    "../../test_schemas/schemas.capnp";
-  ] in
+  let candidates =
+    [
+      "test_schemas/schemas.capnp";
+      "../test_schemas/schemas.capnp";
+      "../../test_schemas/schemas.capnp";
+    ]
+  in
   match List.find_opt Sys.file_exists candidates with
   | Some p -> p
   | None -> Alcotest.fail "cannot find test_schemas/schemas.capnp"
 
 let register_schemas db =
   let path = find_capnp_path () in
-  ignore (ok_exn (Gvecdb.register_schema_from_capnp db
-      ~kind:Gvecdb.Schema_registry.NodeSchemaKind
-      ~type_name:"person" ~capnp_path:path ~struct_name:"Person" ()));
-  ignore (ok_exn (Gvecdb.register_schema_from_capnp db
-      ~kind:Gvecdb.Schema_registry.EdgeSchemaKind
-      ~type_name:"knows" ~capnp_path:path ~struct_name:"Knows" ()))
+  ignore
+    (ok_exn
+       (Gvecdb.register_schema_from_capnp db
+          ~kind:Gvecdb.Schema_registry.NodeSchemaKind ~type_name:"person"
+          ~capnp_path:path ~struct_name:"Person" ()));
+  ignore
+    (ok_exn
+       (Gvecdb.register_schema_from_capnp db
+          ~kind:Gvecdb.Schema_registry.EdgeSchemaKind ~type_name:"knows"
+          ~capnp_path:path ~struct_name:"Knows" ()))
 
-(** Serialize a capnp builder message to a bigstring suitable for
-    set_node_props / set_edge_props. Uses wire format with framing header. *)
+(** Serialize a capnp builder message to a bigstring suitable for set_node_props
+    / set_edge_props. Uses wire format with framing header. *)
 let capnp_to_bigstring to_message builder =
   let msg = to_message builder in
   let total = ref 0 in
@@ -92,11 +97,10 @@ let create_knows_edge db ?txn src dst since context strength =
   edge
 
 (** Decode capnp wire-format bytes into a BytesMessage and apply reader fns.
-    Uses the BytesMessage-based reader (SchemaBuilder.Reader) since
-    FramedStream returns BytesMessage. *)
+    Uses the BytesMessage-based reader (SchemaBuilder.Reader) since FramedStream
+    returns BytesMessage. *)
 let decode_props_capnp bs of_message read_fn =
-  if Bigstringaf.length bs = 0 then
-    Alcotest.fail "empty props"
+  if Bigstringaf.length bs = 0 then Alcotest.fail "empty props"
   else
     let s = Bigstringaf.to_string bs in
     let stream = Capnp.Codecs.FramedStream.of_string ~compression:`None s in
@@ -116,9 +120,9 @@ let read_edge_props_capnp db ?txn edge_id of_message read_fn =
   decode_props_capnp bs of_message read_fn
 
 let get_person_name db ?txn node =
-  read_node_props_capnp db ?txn node
-    SchemaReader.Reader.Person.of_message SchemaReader.Reader.Person.name_get
+  read_node_props_capnp db ?txn node SchemaReader.Reader.Person.of_message
+    SchemaReader.Reader.Person.name_get
 
 let get_person_age db ?txn node =
-  read_node_props_capnp db ?txn node
-    SchemaReader.Reader.Person.of_message SchemaReader.Reader.Person.age_get
+  read_node_props_capnp db ?txn node SchemaReader.Reader.Person.of_message
+    SchemaReader.Reader.Person.age_get

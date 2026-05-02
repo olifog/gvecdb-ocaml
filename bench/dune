@@ -1,7 +1,9 @@
 (library
  (name bench_common)
  (modules bench_common)
- (foreign_stubs (language c) (names bench_stubs))
+ (foreign_stubs
+  (language c)
+  (names bench_stubs))
  (libraries gvecdb yojson bigstringaf unix))
 
 (executable
@@ -22,7 +24,15 @@
 (executable
  (name bench_props)
  (modules bench_props)
- (libraries bench_common gvecdb yojson test_schemas capnp bigstringaf stdint unix))
+ (libraries
+  bench_common
+  gvecdb
+  yojson
+  test_schemas
+  capnp
+  bigstringaf
+  stdint
+  unix))
 
 (executable
  (name bench_crash)
@@ -32,5 +42,6 @@
 (executable
  (name bench_concurrent)
  (modules bench_concurrent)
- (ocamlopt_flags (:standard -alert -do_not_spawn_domains -alert -unsafe_multidomain))
+ (ocamlopt_flags
+  (:standard -alert -do_not_spawn_domains -alert -unsafe_multidomain))
  (libraries bench_common gvecdb yojson bigstringaf unix))

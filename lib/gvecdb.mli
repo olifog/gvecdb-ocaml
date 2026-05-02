@@ -10,7 +10,6 @@ type edge_id = id
 type vector_id = id
 type vector_tag_id = intern_id
 type owner_kind = Node | Edge
-
 type node_info = { id : node_id; node_type : string }
 
 type edge_info = {
@@ -94,9 +93,9 @@ val create_edge :
 
 val edge_exists : t -> ?txn:[> `Read ] txn -> edge_id -> (bool, error) result
 
-(** cascade deletes all attached vectors *)
 val delete_edge :
   t -> ?txn:[> `Read | `Write ] txn -> edge_id -> (unit, error) result
+(** cascade deletes all attached vectors *)
 
 val get_edge_info :
   t -> ?txn:[> `Read ] txn -> edge_id -> (edge_info, error) result
@@ -107,8 +106,6 @@ module Schema_registry = Schema_registry
 module Dynamic_reader = Dynamic_reader
 module Filter = Filter
 
-(** register a node/edge schema by compiling a .capnp file. extracts field
-    offsets from the capnp compiler's CodeGeneratorRequest output. *)
 val register_schema_from_capnp :
   t ->
   kind:Schema_registry.schema_kind ->
@@ -118,8 +115,9 @@ val register_schema_from_capnp :
   ?txn:[> `Read | `Write ] txn ->
   unit ->
   (Schema_registry.registered_schema, error) result
+(** register a node/edge schema by compiling a .capnp file. extracts field
+    offsets from the capnp compiler's CodeGeneratorRequest output. *)
 
-  (** register a schema with explicit field descriptors (no .capnp file needed) *)
 val register_schema_from_fields :
   t ->
   kind:Schema_registry.schema_kind ->
@@ -130,53 +128,67 @@ val register_schema_from_fields :
   ?txn:[> `Read | `Write ] txn ->
   unit ->
   (Schema_registry.registered_schema, error) result
+(** register a schema with explicit field descriptors (no .capnp file needed) *)
 
 val get_schema :
-  t -> ?txn:[> `Read ] txn -> string -> (Schema_registry.registered_schema, error) result
+  t ->
+  ?txn:[> `Read ] txn ->
+  string ->
+  (Schema_registry.registered_schema, error) result
 
-  (** load all persisted schemas into the in-memory cache *)
 val load_all_schemas : t -> unit
+(** load all persisted schemas into the in-memory cache *)
 
 (** {1 adjacency queries} *)
 
 val get_outbound_edges :
-  t -> ?txn:[> `Read ] txn -> node_id ->
-  ?edge_type:string -> ?filters:Filter.filter_predicate list ->
-  unit -> (edge_info list, error) result
+  t ->
+  ?txn:[> `Read ] txn ->
+  node_id ->
+  ?edge_type:string ->
+  ?filters:Filter.filter_predicate list ->
+  unit ->
+  (edge_info list, error) result
 
 val get_inbound_edges :
-  t -> ?txn:[> `Read ] txn -> node_id ->
-  ?edge_type:string -> ?filters:Filter.filter_predicate list ->
-  unit -> (edge_info list, error) result
+  t ->
+  ?txn:[> `Read ] txn ->
+  node_id ->
+  ?edge_type:string ->
+  ?filters:Filter.filter_predicate list ->
+  unit ->
+  (edge_info list, error) result
 
 (** {1 node properties} *)
 
-(** set raw property bytes on an existing node. [string] is the type_name
-    used to update node_meta. *)
 val set_node_props :
-  t -> ?txn:[> `Read | `Write ] txn -> node_id -> string -> bigstring ->
+  t ->
+  ?txn:[> `Read | `Write ] txn ->
+  node_id ->
+  string ->
+  bigstring ->
   (unit, error) result
+(** set raw property bytes on an existing node. [string] is the type_name used
+    to update node_meta. *)
 
 val get_node_props :
   t -> ?txn:[> `Read ] txn -> node_id -> (bigstring, error) result
 
 (** {1 edge properties} *)
 
-(** set raw property bytes on an existing edge. does not change edge type. *)
 val set_edge_props :
-  t -> ?txn:[> `Read | `Write ] txn -> edge_id -> bigstring ->
+  t ->
+  ?txn:[> `Read | `Write ] txn ->
+  edge_id ->
+  bigstring ->
   (unit, error) result
+(** set raw property bytes on an existing edge. does not change edge type. *)
 
 val get_edge_props :
   t -> ?txn:[> `Read ] txn -> edge_id -> (bigstring, error) result
 
 (** {1 vectors} *)
 
-(** create vector on a node or edge. [~normalize:true] (default) stores
-    unit-length vectors for fast cosine similarity with original magnitude
-    preserved in metadata. [~metric] and [~hnsw_params] apply only when
-    the HNSW index is first created for this vector tag. requires explicit
-    transaction *)
 val create_vector :
   t ->
   txn:[> `Read | `Write ] txn ->
@@ -188,14 +200,18 @@ val create_vector :
   string ->
   bigstring ->
   (vector_id, error) result
+(** create vector on a node or edge. [~normalize:true] (default) stores
+    unit-length vectors for fast cosine similarity with original magnitude
+    preserved in metadata. [~metric] and [~hnsw_params] apply only when the HNSW
+    index is first created for this vector tag. requires explicit transaction *)
 
 val vector_exists :
   t -> ?txn:[> `Read ] txn -> vector_id -> (bool, error) result
-  
-(** returns normalized vector if stored with [~normalize:true]. zero-copy view
-    into mmap, only valid within current transaction *)
+
 val get_vector :
   t -> ?txn:[> `Read ] txn -> vector_id -> (bigstring, error) result
+(** returns normalized vector if stored with [~normalize:true]. zero-copy view
+    into mmap, only valid within current transaction *)
 
 val get_vector_info :
   t -> ?txn:[> `Read ] txn -> vector_id -> (vector_info, error) result
@@ -222,7 +238,6 @@ type knn_result = {
   distance : float;
 }
 
-(** brute-force k-NN. O(n log k). results sorted by distance ascending *)
 val knn_brute_force :
   t ->
   ?txn:[> `Read ] txn ->
@@ -230,11 +245,10 @@ val knn_brute_force :
   k:int ->
   float array ->
   (knn_result list, error) result
+(** brute-force k-NN. O(n log k). results sorted by distance ascending *)
 
 (** {1 HNSW-based k-NN search} *)
 
-(** HNSW approximate k-NN. ef controls search quality (higher = better recall).
-    Searches only vectors with the specified tag *)
 val knn_hnsw :
   t ->
   ?txn:[> `Read ] txn ->
@@ -244,12 +258,18 @@ val knn_hnsw :
   vector_tag:string ->
   float array ->
   (knn_result list, error) result
+(** HNSW approximate k-NN. ef controls search quality (higher = better recall).
+    Searches only vectors with the specified tag *)
 
-  (** rebuild HNSW index for a tag from scratch using all vectors with that tag.
-      requires a write transaction because it updates the hnsw_slots mapping. *)
 val rebuild_hnsw_index :
-  t -> ?txn:rw_txn -> ?hnsw_params:Hnsw.params ->
-  vector_tag:string -> unit -> (unit, error) result
+  t ->
+  ?txn:rw_txn ->
+  ?hnsw_params:Hnsw.params ->
+  vector_tag:string ->
+  unit ->
+  (unit, error) result
+(** rebuild HNSW index for a tag from scratch using all vectors with that tag.
+    requires a write transaction because it updates the hnsw_slots mapping. *)
 
 (** {1 dynamic property access} *)
 

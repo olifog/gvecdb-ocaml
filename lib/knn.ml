@@ -20,22 +20,23 @@ let brute_force (db : t) ?txn ~(metric : distance_metric) ~(k : int)
             in
             let off = Int64.to_int offset in
             let vf = db.vector_file in
-            if off >= Vector_file.file_header_size
-               && off + Vector_file.vec_header_size <= vf.file_size
-            then begin
+            if
+              off >= Vector_file.file_header_size
+              && off + Vector_file.vec_header_size <= vf.file_size
+            then
               let dist =
                 Float32_vec.dist_from_header vf.mmap ~vec_off:off query_f32
                   ~query_norm ~metric:metric_int ~dim
               in
               if Float.is_finite dist then
-                if (not (Int_topk.is_full topk))
-                   || dist < Int_topk.worst_dist topk
-                then begin
+                if
+                  (not (Int_topk.is_full topk))
+                  || dist < Int_topk.worst_dist topk
+                then (
                   let vid_int = Int64.to_int vid in
                   Int_topk.insert topk dist vid_int;
-                  Hashtbl.replace meta vid_int (vid, owner_kind, owner_id, tag_id)
-                end
-            end
+                  Hashtbl.replace meta vid_int
+                    (vid, owner_kind, owner_id, tag_id))
           in
           let rec scan () =
             match Lmdb.Cursor.next cursor with
@@ -52,21 +53,21 @@ let brute_force (db : t) ?txn ~(metric : distance_metric) ~(k : int)
       let results =
         Int_topk.to_sorted_list topk
         |> List.filter_map (fun (dist, vid_int) ->
-            match Hashtbl.find_opt meta vid_int with
-            | None -> None
-            | Some (vid, ok, oid, tid) ->
-                try
-                  let tag = Store.unintern db ?txn tid in
-                  Some
-                    ({
-                       vector_id = vid;
-                       owner_kind = ok;
-                       owner_id = oid;
-                       vector_tag = tag;
-                       distance = dist;
-                     }
-                      : knn_result)
-                with Not_found | Lmdb.Not_found -> None)
+               match Hashtbl.find_opt meta vid_int with
+               | None -> None
+               | Some (vid, ok, oid, tid) -> (
+                   try
+                     let tag = Store.unintern db ?txn tid in
+                     Some
+                       ({
+                          vector_id = vid;
+                          owner_kind = ok;
+                          owner_id = oid;
+                          vector_tag = tag;
+                          distance = dist;
+                        }
+                         : knn_result)
+                   with Not_found | Lmdb.Not_found -> None))
       in
       Ok results
     with

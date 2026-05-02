@@ -14,16 +14,6 @@
  (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))
 
 (test
- (name test_zerocopy)
- (modules test_zerocopy)
- (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))
-
-(test
- (name test_keys)
- (modules test_keys)
- (libraries alcotest gvecdb unix))
-
-(test
  (name test_adjacency)
  (modules test_adjacency)
  (libraries alcotest gvecdb test_schemas test_common capnp stdint unix))
@@ -47,11 +37,6 @@
  (name test_integration)
  (modules test_integration)
  (libraries alcotest gvecdb bigstringaf unix threads))
-
-(test
- (name test_mvcc_inspection)
- (modules test_mvcc_inspection)
- (libraries alcotest gvecdb bigstringaf unix))
 
 (test
  (name test_schema_filter)

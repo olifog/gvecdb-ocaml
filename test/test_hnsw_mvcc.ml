@@ -32,12 +32,7 @@ let test_node_roundtrip () =
   let node : Gvecdb.Hnsw_page.node_data =
     {
       layer_count = 3;
-      neighbors =
-        [|
-          [| 1; 2; 3; -1; -1 |];
-          [| 4; 5; -1 |];
-          [| 6; -1 |];
-        |];
+      neighbors = [| [| 1; 2; 3; -1; -1 |]; [| 4; 5; -1 |]; [| 6; -1 |] |];
       vector_id = 42L;
       deleted = false;
       inline_vec = None;

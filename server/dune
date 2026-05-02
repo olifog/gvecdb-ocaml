@@ -1,7 +1,8 @@
 (rule
  (targets gvecdb_api.ml gvecdb_api.mli)
  (deps gvecdb_api.capnp)
- (action (run capnp compile -o %{bin:capnpc-ocaml} %{deps})))
+ (action
+  (run capnp compile -o %{bin:capnpc-ocaml} %{deps})))
 
 (library
  (name gvecdb_rpc)

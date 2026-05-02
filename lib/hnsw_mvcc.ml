@@ -6,8 +6,8 @@
     - Page Table B (4MB): shadow page table for atomic swap
     - Data Pages: append-only node pages (page_size each, nodes_per_page nodes)
 
-    Node size and page size depend on the vector dimension stored in the
-    page table. Layout is computed once at open/create time.
+    Node size and page size depend on the vector dimension stored in the page
+    table. Layout is computed once at open/create time.
 
     Write serialization is provided by the caller holding an LMDB write
     transaction (single-writer guarantee). Readers use epoch-based snapshot
@@ -38,9 +38,7 @@ let pt_dimension_off = 32
 let pt_metric_off = 36
 let pt_max_data_offset_off = 40 (* tracks actual end of data region *)
 let pt_offsets_off = 48
-
-let max_pages_in_table =
-  (page_table_size - pt_offsets_off - 4) / 8
+let max_pages_in_table = (page_table_size - pt_offsets_off - 4) / 8
 
 type error =
   | Invalid_magic
@@ -311,9 +309,7 @@ let open_existing ?seed path =
                         |> Int64.float_of_bits;
                     }
                   in
-                  let layout =
-                    layout_for_dim (max 0 active_table.dimension)
-                  in
+                  let layout = layout_for_dim (max 0 active_table.dimension) in
                   Ok
                     {
                       fd;
@@ -382,14 +378,17 @@ let read_node_with_vec t table ~slot_id =
       let file_offset = Int64.to_int page_offset + node_offset in
       let node = Hnsw_page.read_node_from_mmap t.mmap ~file_offset in
       let ivec =
-        if layout.dim > 0 then begin
-          let vec_header_size = Hnsw_page.node_vec_data_off - Hnsw_page.node_vec_header_off in
-          let ivec_len = vec_header_size + layout.dim * 4 in
+        if layout.dim > 0 then (
+          let vec_header_size =
+            Hnsw_page.node_vec_data_off - Hnsw_page.node_vec_header_off
+          in
+          let ivec_len = vec_header_size + (layout.dim * 4) in
           let bs = Bigstringaf.create ivec_len in
-          Bigstringaf.blit t.mmap ~src_off:(file_offset + Hnsw_page.node_vec_header_off)
+          Bigstringaf.blit t.mmap
+            ~src_off:(file_offset + Hnsw_page.node_vec_header_off)
             bs ~dst_off:0 ~len:ivec_len;
-          Some bs
-        end else None
+          Some bs)
+        else None
       in
       Some { node with Hnsw_page.inline_vec = ivec }
 
@@ -437,8 +436,7 @@ let set_entry_point txn ~entry_point ~max_level =
 let set_dimension txn ~dimension = txn.new_dimension <- dimension
 
 let update_layout t dim =
-  if dim > 0 && dim <> t.layout.dim then
-    t.layout <- layout_for_dim dim
+  if dim > 0 && dim <> t.layout.dim then t.layout <- layout_for_dim dim
 
 let commit t txn =
   try
@@ -460,7 +458,7 @@ let commit t txn =
     in
     let new_page_count = max txn.base_table.page_count (max_dirty_page + 1) in
     if new_page_count > max_pages_in_table then Error Capacity_exceeded
-    else begin
+    else
       let dirty_list =
         Hashtbl.fold (fun pid page acc -> (pid, page) :: acc) txn.dirty_pages []
         |> List.sort (fun (a, _) (b, _) -> compare a b)
@@ -488,8 +486,8 @@ let commit t txn =
         grow_file t (max (t.file_size * 2) (needed + initial_file_size));
       List.iter
         (fun (off, page) ->
-          Hnsw_page.blit_page_to_mmap page t.mmap
-            ~dst_off:(Int64.to_int off) ~len:layout.page_size)
+          Hnsw_page.blit_page_to_mmap page t.mmap ~dst_off:(Int64.to_int off)
+            ~len:layout.page_size)
         allocations;
       let new_table =
         {
@@ -515,14 +513,12 @@ let commit t txn =
       t.active_table <- new_table;
       t.active_which <- shadow;
       Ok ()
-    end
   with
   | Unix.Unix_error (e, fn, _) ->
       Error (IO_error (Printf.sprintf "%s: %s" fn (Unix.error_message e)))
   | Invalid_argument msg -> Error (IO_error msg)
 
 let rollback _t _txn = ()
-
 let get_metric t = t.metric
 let get_params t = t.params
 let get_node_count t = t.active_table.node_count
@@ -552,7 +548,8 @@ type search_context = {
   dist_from_inline : bigstring -> float;
 }
 
-let create_search_context mvcc table ~dist_from_offset ~dist_from_inline ~overlay =
+let create_search_context mvcc table ~dist_from_offset ~dist_from_inline
+    ~overlay =
   { mvcc; table; overlay; dist_from_offset; dist_from_inline }
 
 let rec take_n n acc = function
@@ -583,21 +580,18 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
 
   let slot_dist slot_id =
     let from_overlay =
-      match overlay with
-      | Some ov -> Hashtbl.find_opt ov slot_id
-      | None -> None
+      match overlay with Some ov -> Hashtbl.find_opt ov slot_id | None -> None
     in
     match from_overlay with
-    | Some node ->
+    | Some node -> (
         if node.Hnsw_page.deleted then infinity
-        else begin
+        else
           match slot_offset slot_id with
           | Some fo -> ctx.dist_from_offset (fo + Hnsw_page.node_vec_header_off)
-          | None ->
-              (match node.inline_vec with
+          | None -> (
+              match node.inline_vec with
               | Some iv -> ctx.dist_from_inline iv
-              | None -> infinity)
-        end
+              | None -> infinity))
     | None -> (
         match slot_offset slot_id with
         | None -> infinity
@@ -608,13 +602,11 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
 
   List.iter
     (fun ep ->
-      if not (Bitset.test_and_set visited ep) then begin
+      if not (Bitset.test_and_set visited ep) then
         let dist = slot_dist ep in
-        if Float.is_finite dist then begin
+        if Float.is_finite dist then (
           Int_heap.push candidates dist ep;
-          Int_topk.insert results dist ep
-        end
-      end)
+          Int_topk.insert results dist ep))
     entry_points;
 
   let rec expand () =
@@ -623,18 +615,15 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
     | Some (c_dist, c_slot) ->
         let worst = Int_topk.worst_dist results in
         if c_dist > worst && Int_topk.is_full results then ()
-        else begin
+        else
           let process_neighbor n =
-            if not (Bitset.test_and_set visited n) then begin
+            if not (Bitset.test_and_set visited n) then
               let n_dist = slot_dist n in
-              if Float.is_finite n_dist then begin
+              if Float.is_finite n_dist then
                 let worst' = Int_topk.worst_dist results in
-                if n_dist < worst' || not (Int_topk.is_full results) then begin
+                if n_dist < worst' || not (Int_topk.is_full results) then (
                   Int_heap.push candidates n_dist n;
-                  Int_topk.insert results n_dist n
-                end
-              end
-            end
+                  Int_topk.insert results n_dist n)
           in
           let from_overlay =
             match overlay with
@@ -651,14 +640,12 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
               match slot_offset c_slot with
               | None -> ()
               | Some fo ->
-                  if not (Hnsw_page.mmap_is_deleted mmap ~file_offset:fo) then begin
+                  if not (Hnsw_page.mmap_is_deleted mmap ~file_offset:fo) then
                     let lc = Hnsw_page.mmap_layer_count mmap ~file_offset:fo in
                     if layer < lc then
                       Hnsw_page.iter_neighbors_mmap mmap ~file_offset:fo ~layer
-                        ~f:process_neighbor
-                  end));
+                        ~f:process_neighbor));
           expand ()
-        end
   in
   expand ();
   Int_topk.to_sorted_list results |> List.map (fun (dist, slot) -> (slot, dist))
@@ -666,7 +653,7 @@ let search_layer_mvcc ?(visited_size = 0) ctx ~entry_points ~ef ~layer =
 let search_mvcc ctx ~k ~ef =
   let table = ctx.table in
   if table.entry_point < 0 then []
-  else begin
+  else
     let ep = ref [ table.entry_point ] in
     for layer = table.max_level downto 1 do
       match search_layer_mvcc ctx ~entry_points:!ep ~ef:1 ~layer with
@@ -676,7 +663,6 @@ let search_mvcc ctx ~k ~ef =
     let ef' = max ef k in
     let results = search_layer_mvcc ctx ~entry_points:!ep ~ef:ef' ~layer:0 in
     take_n k [] results
-  end
 
 (* Heuristic neighbor selection (Algorithm 4 from Malkov & Yashunin 2016). *)
 let select_neighbors candidates m ~pairwise_dist =
@@ -688,42 +674,37 @@ let select_neighbors candidates m ~pairwise_dist =
     | _ when n_selected >= m -> (List.rev selected, discarded)
     | (slot, dist_to_q) :: rest ->
         let dominated =
-          List.exists
-            (fun sel -> pairwise_dist slot sel <= dist_to_q)
-            selected
+          List.exists (fun sel -> pairwise_dist slot sel <= dist_to_q) selected
         in
         if dominated then select n_selected selected (slot :: discarded) rest
         else select (n_selected + 1) (slot :: selected) discarded rest
   in
   let selected, discarded = select 0 [] [] sorted in
   let remaining = m - List.length selected in
-  if remaining > 0 then selected @ take_n remaining [] discarded
-  else selected
+  if remaining > 0 then selected @ take_n remaining [] discarded else selected
 
-let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
-    ~dist_from_inline ~compute_pairwise_distance ~dimension =
+let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance ~dist_from_inline
+    ~compute_pairwise_distance ~dimension =
   let params = t.params in
   let r = Random.State.float t.rng 1.0 in
   let level = int_of_float (-.log (max r Float.epsilon) *. params.Hnsw.ml) in
   let level = min level (params.Hnsw.max_layers - 1) in
   let slot_id = txn.new_node_count in
 
-  if txn.new_dimension < 0 then
-    update_layout t dimension;
+  if txn.new_dimension < 0 then update_layout t dimension;
   let layout = t.layout in
 
   let new_page_id = Hnsw_page.slot_to_page layout slot_id in
   if new_page_id >= max_pages_in_table then Error Capacity_exceeded
-  else begin
+  else
     let dim_ok =
-      if txn.new_dimension < 0 then begin
+      if txn.new_dimension < 0 then (
         txn.new_dimension <- dimension;
-        true
-      end
+        true)
       else txn.new_dimension = dimension
     in
     if not dim_ok then Error (Corrupted_data "dimension mismatch")
-    else begin
+    else
       let neighbors =
         Array.init (level + 1) (fun layer ->
             let m = if layer = 0 then 2 * params.m else params.m_max in
@@ -750,12 +731,11 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
       Hashtbl.replace overlay slot_id new_node;
       txn.new_node_count <- slot_id + 1;
 
-      if txn.new_entry_point < 0 then begin
+      if txn.new_entry_point < 0 then (
         txn.new_entry_point <- slot_id;
         txn.new_max_level <- level;
-        Ok slot_id
-      end
-      else begin
+        Ok slot_id)
+      else
         let exception Neighbor_not_found in
         try
           let ctx =
@@ -773,7 +753,10 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
 
           let vs = txn.new_node_count in
           for layer = current_max downto level + 1 do
-            match search_layer_mvcc ~visited_size:vs ctx ~entry_points:!ep ~ef:1 ~layer with
+            match
+              search_layer_mvcc ~visited_size:vs ctx ~entry_points:!ep ~ef:1
+                ~layer
+            with
             | [] -> ()
             | results -> ep := List.map fst results
           done;
@@ -787,15 +770,22 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
                     (* promoted committed node — no inline_vec, read from mmap *)
                     let page_id = Hnsw_page.slot_to_page layout slot in
                     if page_id < txn.base_table.page_count then
-                      let fo = Int64.to_int txn.base_table.offsets.(page_id)
-                               + Hnsw_page.slot_offset_in_page layout slot in
+                      let fo =
+                        Int64.to_int txn.base_table.offsets.(page_id)
+                        + Hnsw_page.slot_offset_in_page layout slot
+                      in
                       Some (t.mmap, fo + Hnsw_page.node_vec_header_off)
                     else None)
             | None ->
                 let page_id = Hnsw_page.slot_to_page layout slot in
-                if slot < txn.base_table.node_count && page_id < txn.base_table.page_count then
-                  let fo = Int64.to_int txn.base_table.offsets.(page_id)
-                           + Hnsw_page.slot_offset_in_page layout slot in
+                if
+                  slot < txn.base_table.node_count
+                  && page_id < txn.base_table.page_count
+                then
+                  let fo =
+                    Int64.to_int txn.base_table.offsets.(page_id)
+                    + Hnsw_page.slot_offset_in_page layout slot
+                  in
                   Some (t.mmap, fo + Hnsw_page.node_vec_header_off)
                 else None
           in
@@ -851,33 +841,27 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
                           copy
                       | None -> raise Neighbor_not_found)
                 in
-                if layer < neighbor.layer_count then begin
+                if layer < neighbor.layer_count then (
                   let n_neighbors = neighbor.neighbors.(layer) in
                   let empty_idx = ref (-1) in
                   for i = 0 to Array.length n_neighbors - 1 do
                     if n_neighbors.(i) < 0 && !empty_idx < 0 then empty_idx := i
                   done;
                   if !empty_idx >= 0 then n_neighbors.(!empty_idx) <- slot_id
-                  else begin
-                    let dist_to_new =
-                      pairwise_dist neighbor_slot slot_id
-                    in
+                  else
+                    let dist_to_new = pairwise_dist neighbor_slot slot_id in
                     let worst_idx = ref (-1) in
                     let worst_dist = ref neg_infinity in
                     for i = 0 to Array.length n_neighbors - 1 do
                       let n_slot = n_neighbors.(i) in
-                      if n_slot >= 0 then begin
+                      if n_slot >= 0 then
                         let d = pairwise_dist neighbor_slot n_slot in
-                        if d > !worst_dist then begin
+                        if d > !worst_dist then (
                           worst_dist := d;
-                          worst_idx := i
-                        end
-                      end
+                          worst_idx := i)
                     done;
                     if !worst_idx >= 0 && dist_to_new < !worst_dist then
-                      n_neighbors.(!worst_idx) <- slot_id
-                  end
-                end)
+                      n_neighbors.(!worst_idx) <- slot_id))
               selected;
 
             match candidates with
@@ -885,14 +869,10 @@ let insert_mvcc t txn ~vector_id ~inline_vec ~compute_distance
             | _ -> ep := List.map fst candidates
           done;
 
-          if level > current_max then begin
+          if level > current_max then (
             txn.new_entry_point <- slot_id;
-            txn.new_max_level <- level
-          end;
+            txn.new_max_level <- level);
 
           Ok slot_id
         with Neighbor_not_found ->
           Error (Corrupted_data "neighbor not found during insertion")
-      end
-    end
-  end

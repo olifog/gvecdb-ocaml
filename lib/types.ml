@@ -22,7 +22,6 @@ module Owner = struct
     let kind = if Int64.logand packed edge_flag <> 0L then Edge else Node in
     let id = Int64.logand packed id_mask in
     (kind, id)
-
 end
 
 type node_info = { id : node_id; node_type : string }

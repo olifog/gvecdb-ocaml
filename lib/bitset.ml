@@ -11,7 +11,6 @@ let test_and_set t i =
     let bit = 1 lsl (i land 7) in
     let old = Char.code (Bytes.unsafe_get t byte_idx) in
     if old land bit <> 0 then true
-    else begin
+    else (
       Bytes.unsafe_set t byte_idx (Char.unsafe_chr (old lor bit));
-      false
-    end
+      false)

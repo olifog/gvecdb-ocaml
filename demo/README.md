@@ -14,7 +14,7 @@ full-stack demo for gvecdb, ingests arXiv papers as a graph with vector embeddin
 
 **Edges:** `authored` (author -> paper, with position), `cites` (paper -> paper)
 
-**Vectors:** `abstract_embedding` and `title_embedding` (384-dim, all-MiniLM-L6-v2)
+**Vectors:** `abstract_embedding` and `title_embedding` (1024-dim, Cohere Embed English v3 via AWS Bedrock)
 
 ## Setup
 

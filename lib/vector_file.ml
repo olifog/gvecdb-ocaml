@@ -133,7 +133,7 @@ let create path : (t, error) result =
     let exists = Sys.file_exists path in
     let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
 
-    if not exists then begin
+    if not exists then (
       Unix.ftruncate fd initial_file_size;
       let mmap = create_mmap fd initial_file_size in
       set_magic mmap;
@@ -141,9 +141,8 @@ let create path : (t, error) result =
       set_slot_size mmap 0L;
       set_next_offset mmap (Int64.of_int file_header_size);
       Msync.msync mmap;
-      Ok { fd; mmap; file_size = initial_file_size; path }
-    end
-    else begin
+      Ok { fd; mmap; file_size = initial_file_size; path })
+    else
       let stats = Unix.fstat fd in
       let file_size = stats.Unix.st_size in
       let result =
@@ -158,7 +157,6 @@ let create path : (t, error) result =
       in
       (match result with Error _ -> Unix.close fd | Ok _ -> ());
       result
-    end
   with Unix.Unix_error (err, fn, arg) ->
     Error
       (IO_error (Printf.sprintf "%s(%s): %s" fn arg (Unix.error_message err)))
@@ -177,7 +175,7 @@ let allocate t dim : (int64, error) result =
   let current_offset = Int64.to_int (get_next_offset t.mmap) in
   let new_offset = current_offset + needed in
   let grow_result =
-    if new_offset > t.file_size then begin
+    if new_offset > t.file_size then
       let new_size = max (t.file_size * 2) (new_offset + initial_file_size) in
       try
         grow_file t new_size;
@@ -186,7 +184,6 @@ let allocate t dim : (int64, error) result =
         Error
           (Allocation_failed
              (Printf.sprintf "%s(%s): %s" fn arg (Unix.error_message err)))
-    end
     else Ok ()
   in
   match grow_result with
@@ -204,13 +201,12 @@ let write_vector_at t offset ~normalized (data : bigstring) (norm : float) :
       let needed = vec_header_size + Bigstringaf.length data in
       if off + needed > t.file_size then
         Error (Allocation_failed "write would exceed file bounds")
-      else begin
+      else
         let flags = if normalized then flag_normalized else 0 in
         write_header_at t off { dim; flags; norm };
         Bigstringaf.blit data ~src_off:0 t.mmap ~dst_off:(off + vec_header_size)
           ~len:(Bigstringaf.length data);
         Ok ()
-      end
 
 let read_vector_at t offset : (bigstring, error) result =
   match read_header_at t offset with
@@ -237,4 +233,3 @@ let read_vector_with_header t offset : (bigstring * vector_header, error) result
           Bigstringaf.sub t.mmap ~off:(off + vec_header_size) ~len:data_len
         in
         Ok (data, header)
-

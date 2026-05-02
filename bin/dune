@@ -1,9 +1,0 @@
-(executable
- (public_name gvecdb)
- (name main)
- (libraries gvecdb lmdb))
-
-(executable
- (name example)
- (libraries gvecdb test_schemas capnp)
- (modules example))

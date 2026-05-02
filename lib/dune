@@ -3,11 +3,20 @@
   (backend bisect_ppx))
  (name gvecdb)
  (public_name gvecdb)
- (libraries lmdb capnp bigstringaf stdint unix threads ocaml_simd.avx stdlib_stable)
+ (libraries
+  lmdb
+  capnp
+  bigstringaf
+  stdint
+  unix
+  threads
+  ocaml_simd.avx
+  stdlib_stable)
  (foreign_stubs
   (language c)
   (names msync_stubs)
-  (flags (:standard -march=native -O3)))
+  (flags
+   (:standard -march=native -O3)))
  (modules
   common
   types

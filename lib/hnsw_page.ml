@@ -25,21 +25,19 @@ let upper_layer_size = upper_layer_max_neighbors * 4
 
 let layer_offset layer =
   if layer = 0 then node_layer0_off
-  else node_layer0_off + layer0_size + (layer - 1) * upper_layer_size
+  else node_layer0_off + layer0_size + ((layer - 1) * upper_layer_size)
 
 let layer_neighbor_count layer =
   if layer = 0 then layer0_max_neighbors else upper_layer_max_neighbors
 
 let metadata_offset =
-  node_layer0_off + layer0_size + (max_supported_layers - 1) * upper_layer_size
+  node_layer0_off + layer0_size + ((max_supported_layers - 1) * upper_layer_size)
 
 let node_vector_id_off = metadata_offset
 let node_deleted_off = metadata_offset + 8
-
 let node_data_end = node_deleted_off + 1
 let vec_header_size = 16
-let node_vec_data_off =
-  (node_data_end + vec_header_size + 31) land (lnot 31)
+let node_vec_data_off = (node_data_end + vec_header_size + 31) land lnot 31
 let node_vec_header_off = node_vec_data_off - vec_header_size
 
 type layout = {
@@ -53,15 +51,17 @@ let max_dim = 1_000_000
 
 let compute_layout dim =
   let d = max 0 (min dim max_dim) in
-  let raw = node_vec_data_off + d * 4 in
-  let node_size = (raw + 31) land (lnot 31) in
+  let raw = node_vec_data_off + (d * 4) in
+  let node_size = (raw + 31) land lnot 31 in
   let rec next_pow2 n = if n >= node_size then n else next_pow2 (n * 2) in
   let page_size = next_pow2 default_page_size in
   let nodes_per_page = max 1 (page_size / node_size) in
   { dim = d; node_size; page_size; nodes_per_page }
 
 let slot_to_page layout slot_id = slot_id / layout.nodes_per_page
-let slot_offset_in_page layout slot_id = (slot_id mod layout.nodes_per_page) * layout.node_size
+
+let slot_offset_in_page layout slot_id =
+  slot_id mod layout.nodes_per_page * layout.node_size
 
 let crc32_table =
   Array.init 256 (fun i ->
@@ -101,7 +101,7 @@ let read_node_from_page (page : bytes) ~offset : node_data =
         let base = layer_offset layer in
         let count = layer_neighbor_count layer in
         Array.init count (fun i ->
-            Bytes.get_int32_le page (offset + base + i * 4) |> Int32.to_int))
+            Bytes.get_int32_le page (offset + base + (i * 4)) |> Int32.to_int))
   in
   {
     layer_count;
@@ -111,7 +111,8 @@ let read_node_from_page (page : bytes) ~offset : node_data =
     inline_vec = None;
   }
 
-let write_node_to_page (layout : layout) (page : bytes) ~offset (n : node_data) =
+let write_node_to_page (layout : layout) (page : bytes) ~offset (n : node_data)
+    =
   Bytes.set page (offset + node_layer_count_off) (Char.chr n.layer_count);
   for i = 1 to 7 do
     Bytes.set page (offset + i) '\x00'
@@ -120,12 +121,11 @@ let write_node_to_page (layout : layout) (page : bytes) ~offset (n : node_data) 
     let base = layer_offset layer in
     let count = layer_neighbor_count layer in
     let actual =
-      if layer < Array.length n.neighbors then n.neighbors.(layer)
-      else [||]
+      if layer < Array.length n.neighbors then n.neighbors.(layer) else [||]
     in
     for i = 0 to count - 1 do
       let v = if i < Array.length actual then actual.(i) else -1 in
-      Bytes.set_int32_le page (offset + base + i * 4) (Int32.of_int v)
+      Bytes.set_int32_le page (offset + base + (i * 4)) (Int32.of_int v)
     done
   done;
   Bytes.set_int64_le page (offset + node_vector_id_off) n.vector_id;
@@ -140,14 +140,16 @@ let write_node_to_page (layout : layout) (page : bytes) ~offset (n : node_data) 
       let ivec_len = Bigstringaf.length ivec in
       assert (ivec_len <= layout.node_size - node_vec_header_off);
       Bigstringaf.blit_to_bytes ivec ~src_off:0 page
-        ~dst_off:(offset + node_vec_header_off) ~len:ivec_len;
+        ~dst_off:(offset + node_vec_header_off)
+        ~len:ivec_len;
       for i = node_vec_header_off + ivec_len to layout.node_size - 1 do
         Bytes.set page (offset + i) '\x00'
       done
   | None ->
       (* CoW pages already contain the previous inline vec from the mmap copy,
          new pages are zero-filled. either way leaving the region untouched
-         is correct since callers that modify only metadata/neighbors pass None. *) ()
+         is correct since callers that modify only metadata/neighbors pass None. *)
+      ()
 
 let create_empty_page page_size = Bytes.make page_size '\x00'
 let copy_page src = Bytes.copy src
@@ -162,7 +164,7 @@ let read_node_from_mmap (mmap : bigstring) ~file_offset : node_data =
         let base = layer_offset layer in
         let count = layer_neighbor_count layer in
         Array.init count (fun i ->
-            Bigstringaf.get_int32_le mmap (file_offset + base + i * 4)
+            Bigstringaf.get_int32_le mmap (file_offset + base + (i * 4))
             |> Int32.to_int))
   in
   {
@@ -182,7 +184,9 @@ let mmap_to_bytes (mmap : bigstring) ~offset ~len =
   b
 
 let mmap_layer_count (mmap : bigstring) ~file_offset =
-  let lc = Char.code (Bigstringaf.get mmap (file_offset + node_layer_count_off)) in
+  let lc =
+    Char.code (Bigstringaf.get mmap (file_offset + node_layer_count_off))
+  in
   max 1 (min lc max_supported_layers)
 
 let mmap_is_deleted (mmap : bigstring) ~file_offset =
@@ -192,6 +196,9 @@ let iter_neighbors_mmap (mmap : bigstring) ~file_offset ~layer ~f =
   let base = layer_offset layer in
   let count = layer_neighbor_count layer in
   for i = 0 to count - 1 do
-    let n = Bigstringaf.get_int32_le mmap (file_offset + base + i * 4) |> Int32.to_int in
+    let n =
+      Bigstringaf.get_int32_le mmap (file_offset + base + (i * 4))
+      |> Int32.to_int
+    in
     if n >= 0 then f n
   done
