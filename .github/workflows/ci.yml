@@ -31,6 +31,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y liblmdb-dev capnproto
 
+      - name: Pin dependencies
+        run: |
+          opam pin add capnp-rpc.2.1.1 git+https://github.com/mirage/capnp-rpc.git#00423406c03cafcbf31174cb8bacb03f3ee03f5e -n
+          opam pin add capnp-rpc-net.2.1.1 git+https://github.com/mirage/capnp-rpc.git#00423406c03cafcbf31174cb8bacb03f3ee03f5e -n
+          opam pin add capnp-rpc-unix.2.1.1 git+https://github.com/mirage/capnp-rpc.git#00423406c03cafcbf31174cb8bacb03f3ee03f5e -n
+
       - name: Install OCaml dependencies
         run: opam install . --deps-only --with-test -y
 
