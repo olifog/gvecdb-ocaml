@@ -31,7 +31,6 @@
    eio_main
    cmdliner
    ocaml_simd
-   stdlib_stable
    (alcotest :with-test)
  )
  (tags
