@@ -36,7 +36,7 @@ jobs:
           opam pin add capnp-rpc.2.1.1 git+https://github.com/mirage/capnp-rpc.git#00423406c03cafcbf31174cb8bacb03f3ee03f5e -n
           opam pin add capnp-rpc-net.2.1.1 git+https://github.com/mirage/capnp-rpc.git#00423406c03cafcbf31174cb8bacb03f3ee03f5e -n
           opam pin add capnp-rpc-unix.2.1.1 git+https://github.com/mirage/capnp-rpc.git#00423406c03cafcbf31174cb8bacb03f3ee03f5e -n
-          opam pin add digestif.1.3.0 git+https://github.com/mirage/digestif.git -n
+          opam pin add digestif.1.3.0 git+https://github.com/olifog/digestif.git#oxcaml-compat -n
 
       - name: Install OCaml dependencies
         run: opam install . --deps-only --with-test -y
