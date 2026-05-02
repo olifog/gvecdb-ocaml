@@ -31,7 +31,6 @@
    eio_main
    cmdliner
    (alcotest :with-test)
-   (bisect_ppx :with-test)
  )
  (tags
   ("graph" "vector" "database")))
