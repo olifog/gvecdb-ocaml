@@ -205,6 +205,24 @@ val create_vector :
     preserved in metadata. [~metric] and [~hnsw_params] apply only when the HNSW
     index is first created for this vector tag. requires explicit transaction *)
 
+type batch_vector_request = {
+  owner_kind : owner_kind;
+  owner_id : id;
+  vector_tag : string;
+  data : bigstring;
+  normalize : bool;
+  metric : distance_metric;
+}
+
+val create_vectors_batch :
+  t ->
+  txn:[> `Read | `Write ] txn ->
+  batch_vector_request list ->
+  (vector_id list, error) result
+(** insert multiple vectors sharing a single HNSW commit. all vectors must have
+    the same vector_tag, normalize, and metric. reduces CoW amplification from
+    O(n) commits to O(1). *)
+
 val vector_exists :
   t -> ?txn:[> `Read ] txn -> vector_id -> (bool, error) result
 

@@ -595,6 +595,142 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric ?hnsw_params
                                 (Keys.encode_hnsw_slot_value slot_id);
                               vector_id))))))
 
+type batch_vector_request = {
+  owner_kind : owner_kind;
+  owner_id : id;
+  vector_tag : string;
+  data : bigstring;
+  normalize : bool;
+  metric : distance_metric;
+}
+
+let create_vectors_batch (t : t) ~txn (requests : batch_vector_request list) :
+    (vector_id list, error) result =
+  match requests with
+  | [] -> Ok []
+  | first :: _ -> (
+      let vector_tag = first.vector_tag in
+      let normalize = first.normalize in
+      let metric = first.metric in
+      match get_or_create_hnsw_mvcc t ~metric vector_tag with
+      | None -> Error (Storage_error "failed to create HNSW file")
+      | Some mvcc -> (
+          let* vector_tag_id = Store.intern t.db ~txn vector_tag in
+          let hnsw_txn = Hnsw_mvcc.begin_write mvcc in
+          let dim = Float32_vec.dim first.data in
+          let pairwise_distance =
+            make_pairwise_distance_inline metric dim
+          in
+          let rec insert_all acc = function
+            | [] -> Ok (List.rev acc)
+            | req :: rest -> (
+                let store_data, norm =
+                  if normalize then Float32_vec.normalize req.data
+                  else (req.data, sqrt (Float32_vec.norm_sq req.data))
+                in
+                match Vector_file.allocate t.db.vector_file dim with
+                | Error e ->
+                    Hnsw_mvcc.rollback mvcc hnsw_txn;
+                    Error (Storage_error (Vector_file.error_to_string e))
+                | Ok file_offset -> (
+                    match
+                      Vector_file.write_vector_at t.db.vector_file file_offset
+                        ~normalized:normalize store_data norm
+                    with
+                    | Error e ->
+                        Hnsw_mvcc.rollback mvcc hnsw_txn;
+                        Error (Storage_error (Vector_file.error_to_string e))
+                    | Ok () -> (
+                        let vector_id_result =
+                          Types.wrap_lmdb_exn (fun () ->
+                              Store.get_next_id t.db ~txn
+                                Types.Metadata.next_vector_id)
+                        in
+                        match vector_id_result with
+                        | Error e ->
+                            Hnsw_mvcc.rollback mvcc hnsw_txn;
+                            Error e
+                        | Ok vector_id -> (
+                            let query_f32, query_norm =
+                              if normalize then (store_data, norm)
+                              else
+                                let nv, n = Float32_vec.normalize store_data in
+                                (nv, n)
+                            in
+                            let hnsw_metric = Hnsw_mvcc.get_metric mvcc in
+                            let hnsw_mmap = Hnsw_mvcc.get_mmap mvcc in
+                            let compute_distance =
+                              make_compute_distance_hnsw hnsw_mmap hnsw_metric
+                                query_f32 query_norm dim
+                            in
+                            let dist_from_inline =
+                              make_dist_from_inline hnsw_metric query_f32
+                                query_norm dim
+                            in
+                            let inline_vec =
+                              build_inline_vec ~normalized:normalize store_data
+                                norm
+                            in
+                            match
+                              Hnsw_mvcc.insert_mvcc mvcc hnsw_txn ~vector_id
+                                ~inline_vec ~compute_distance ~dist_from_inline
+                                ~compute_pairwise_distance:pairwise_distance
+                                ~dimension:dim
+                            with
+                            | Error (Hnsw_mvcc.Corrupted_data msg) ->
+                                Hnsw_mvcc.rollback mvcc hnsw_txn;
+                                Error
+                                  (Corrupted_data ("dimension mismatch: " ^ msg))
+                            | Error e ->
+                                Hnsw_mvcc.rollback mvcc hnsw_txn;
+                                Error
+                                  (Storage_error (Hnsw_mvcc.error_to_string e))
+                            | Ok slot_id -> (
+                                match
+                                  Types.wrap_lmdb_exn (fun () ->
+                                      let key = Keys.encode_id_bs vector_id in
+                                      let owner_value =
+                                        Keys.encode_vector_owner_bs
+                                          ~owner_kind:req.owner_kind
+                                          ~owner_id:req.owner_id ~vector_tag_id
+                                          ~file_offset
+                                      in
+                                      Lmdb.Map.set t.db.vector_owners ~txn key
+                                        owner_value;
+                                      let index_key =
+                                        Keys.encode_vector_index_bs
+                                          ~owner_kind:req.owner_kind
+                                          ~owner_id:req.owner_id ~vector_tag_id
+                                          ~vector_id
+                                      in
+                                      Lmdb.Map.set t.db.vector_index ~txn
+                                        index_key Store.empty_bigstring;
+                                      let slot_key =
+                                        Keys.encode_hnsw_slot_key
+                                          ~tag_id:vector_tag_id ~vector_id
+                                      in
+                                      Lmdb.Map.set t.db.hnsw_slots ~txn slot_key
+                                        (Keys.encode_hnsw_slot_value slot_id))
+                                with
+                                | Error e ->
+                                    Hnsw_mvcc.rollback mvcc hnsw_txn;
+                                    Error e
+                                | Ok () ->
+                                    insert_all (vector_id :: acc) rest)))))
+          in
+          match insert_all [] requests with
+          | Error e ->
+              Hnsw_mvcc.rollback mvcc hnsw_txn;
+              Error e
+          | Ok ids -> (
+              match Hnsw_mvcc.commit mvcc hnsw_txn with
+              | Error e ->
+                  Error (Storage_error (Hnsw_mvcc.error_to_string e))
+              | Ok () ->
+                  set_lmdb_hnsw_epoch t.db ~txn vector_tag
+                    (Hnsw_mvcc.get_epoch mvcc);
+                  Ok ids)))
+
 let create_vector (t : t) ~txn ?(normalize = true) ?(metric = Cosine)
     ?hnsw_params (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
     (data : bigstring) : (vector_id, error) result =

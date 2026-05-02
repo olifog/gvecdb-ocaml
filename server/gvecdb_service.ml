@@ -441,6 +441,48 @@ let local (db : Gvecdb.t) =
          | None -> Results.error_set results "transaction aborted");
          Capnp_rpc.Service.return response
 
+       method create_vector_batch_impl params release_param_caps =
+         let open G.CreateVectorBatch in
+         let node_ids = Params.node_ids_get_array params in
+         let vector_tag = Params.vector_tag_get params in
+         let vectors = Params.vectors_get_array params in
+         let normalize = Params.normalize_get params in
+         let metric = metric_of_uint8 (Params.metric_get params) in
+         release_param_caps ();
+         let response, results =
+           Capnp_rpc.Service.Response.create Results.init_pointer
+         in
+         let requests =
+           Array.to_list
+             (Array.mapi
+                (fun i node_id ->
+                  let data = vectors.(i) in
+                  let bs =
+                    Bigstring.of_string ~off:0 ~len:(String.length data) data
+                  in
+                  Gvecdb.
+                    {
+                      owner_kind = Node;
+                      owner_id = node_id;
+                      vector_tag;
+                      data = bs;
+                      normalize;
+                      metric;
+                    })
+                node_ids)
+         in
+         (match
+            Gvecdb.with_transaction db (fun txn ->
+                Gvecdb.create_vectors_batch db ~txn requests)
+          with
+         | Some (Ok ids) ->
+             let arr = Results.vector_ids_init results (List.length ids) in
+             List.iteri (fun i vid -> Capnp.Array.set arr i vid) ids
+         | Some (Error e) ->
+             Results.error_set results (Gvecdb.Error.to_string e)
+         | None -> Results.error_set results "transaction aborted");
+         Capnp_rpc.Service.return response
+
        method delete_vector_impl params release_param_caps =
          let open G.DeleteVector in
          let vector_id = Params.vector_id_get params in

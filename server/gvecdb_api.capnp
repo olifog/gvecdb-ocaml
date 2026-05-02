@@ -110,6 +110,15 @@ interface Gvecdb {
     metric :UInt8
   ) -> (results :List(KnnResult), error :Text);
 
+  # -- Batch Vector Operations --
+  createVectorBatch @22 (
+    nodeIds :List(Int64),
+    vectorTag :Text,
+    vectors :List(Data),
+    normalize :Bool,
+    metric :UInt8
+  ) -> (vectorIds :List(Int64), error :Text);
+
   # -- Maintenance --
   rebuildHnswIndex @21 (
     vectorTag :Text

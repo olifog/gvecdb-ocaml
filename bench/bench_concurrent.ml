@@ -57,15 +57,24 @@ let () =
       let i = ref 0 in
       while !i < n_base do
         let batch_end = min n_base (!i + batch_size) in
+        let count = batch_end - !i in
         with_txn db (fun txn ->
-            for j = !i to batch_end - 1 do
-              let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
-              ignore
-                (ok_exn
-                   (Gvecdb.create_vector db ~txn ~metric:Gvecdb.Euclidean Node
-                      node "v"
-                      (floats_to_bigstring vectors.(j))))
-            done);
+            let node_ids =
+              Array.init count (fun _ ->
+                  ok_exn (Gvecdb.create_node db ~txn "doc"))
+            in
+            let requests =
+              List.init count (fun idx ->
+                  {
+                    Gvecdb.owner_kind = Node;
+                    owner_id = node_ids.(idx);
+                    vector_tag = "v";
+                    data = floats_to_bigstring vectors.(!i + idx);
+                    normalize = true;
+                    metric = Gvecdb.Euclidean;
+                  })
+            in
+            ignore (ok_exn (Gvecdb.create_vectors_batch db ~txn requests)));
         i := batch_end
       done;
       Gc.compact ();

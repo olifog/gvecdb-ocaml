@@ -40,7 +40,7 @@ console = Console()
 EMBED_BATCH_SIZE = 96
 RPC_CONCURRENCY = 32
 MIN_YEAR = 0
-REBUILD_INTERVAL = 600_000
+REBUILD_INTERVAL = 300_000
 
 OPENALEX_BATCH_SIZE = 50
 OPENALEX_EMAIL = "demo@gvecdb.dev"
@@ -367,26 +367,13 @@ async def ingest_papers(
             abstract_vecs = embed_batch_to_bytes(abstracts)
             title_vecs = embed_batch_to_bytes(titles)
 
-            vec_coros = []
-            for j, p in enumerate(batch):
-                paper_node = arxiv_id_to_node[p["id"]]
-
-                async def _store_vecs(
-                    node: int = paper_node,
-                    abs_vec: bytes = abstract_vecs[j],
-                    title_vec: bytes = title_vecs[j],
-                ) -> None:
-                    async with sem:
-                        await client.create_vector(
-                            node, "abstract_embedding", abs_vec, metric=METRIC_COSINE
-                        )
-                        await client.create_vector(
-                            node, "title_embedding", title_vec, metric=METRIC_COSINE
-                        )
-
-                vec_coros.append(_store_vecs())
-
-            await asyncio.gather(*vec_coros)
+            batch_node_ids = [arxiv_id_to_node[p["id"]] for p in batch]
+            await client.create_vector_batch(
+                batch_node_ids, "abstract_embedding", abstract_vecs, metric=METRIC_COSINE
+            )
+            await client.create_vector_batch(
+                batch_node_ids, "title_embedding", title_vecs, metric=METRIC_COSINE
+            )
 
             for p in batch:
                 ingested_ids.add(p["id"])

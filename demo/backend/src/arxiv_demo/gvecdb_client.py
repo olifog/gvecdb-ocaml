@@ -221,6 +221,25 @@ class GvecdbClient:
         _check_error(result)
         return int(result.vectorId)
 
+    async def create_vector_batch(
+        self,
+        node_ids: list[int],
+        vector_tag: str,
+        vectors: list[bytes],
+        *,
+        normalise: bool = False,
+        metric: int = METRIC_COSINE,
+    ) -> list[int]:
+        result = await self._client.createVectorBatch(
+            nodeIds=node_ids,
+            vectorTag=vector_tag,
+            vectors=vectors,
+            normalize=normalise,
+            metric=metric,
+        )
+        _check_error(result)
+        return [int(vid) for vid in result.vectorIds]
+
     async def rebuild_hnsw_index(self, vector_tag: str) -> None:
         result = await self._client.rebuildHnswIndex(vectorTag=vector_tag)
         _check_error(result)
@@ -328,34 +347,3 @@ class GvecdbClient:
         with arxiv_schema.Authored.from_bytes(data) as authored:  # type: ignore[no-untyped-call]
             return AuthoredProps(position=int(authored.position))
 
-    @staticmethod
-    def decode_field_value(data: bytes) -> str | int | float | bool | None:
-        if not data:
-            return None
-        tag = data[0]
-        payload = data[1:]
-        if tag == 0:
-            return None
-        if tag == 1:
-            return bool(payload[0]) if payload else False
-        if tag == 2:
-            # signed int8
-            v = payload[0] if payload else 0
-            return v - 256 if v > 127 else v
-        if tag == 6:
-            return payload[0] if payload else 0
-        if tag in (3, 7):
-            return struct.unpack("<H", payload[:2])[0] if len(payload) >= 2 else 0
-        if tag in (4, 8):
-            return struct.unpack("<i", payload[:4])[0] if len(payload) >= 4 else 0
-        if tag in (5, 9):
-            return struct.unpack("<q", payload[:8])[0] if len(payload) >= 8 else 0
-        if tag == 10:
-            return struct.unpack("<f", payload[:4])[0] if len(payload) >= 4 else 0.0
-        if tag == 11:
-            return struct.unpack("<d", payload[:8])[0] if len(payload) >= 8 else 0.0
-        if tag == 12:
-            return payload.decode("utf-8", errors="replace")
-        if tag == 13:
-            return payload.hex()
-        return None

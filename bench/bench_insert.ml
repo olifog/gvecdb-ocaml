@@ -32,7 +32,7 @@ let batch_result_to_json b : Yojson.Basic.t =
       ("throughput_vps", `Float b.throughput_vps);
     ]
 
-(** Insert N vectors in batches, recording per-batch throughput *)
+(** Insert N vectors using create_vectors_batch (one HNSW commit per LMDB txn batch) *)
 let bench_batched ~vectors ~batch_size =
   let n = Array.length vectors in
   with_bench_db "insert_batch" @@ fun db path ->
@@ -44,13 +44,22 @@ let bench_batched ~vectors ~batch_size =
     let count = batch_end - !i in
     let t0 = clock_us () in
     with_txn db (fun txn ->
-        for j = !i to batch_end - 1 do
-          let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
-          ignore
-            (ok_exn
-               (Gvecdb.create_vector db ~txn Node node "v"
-                  (floats_to_bigstring vectors.(j))))
-        done);
+        let node_ids =
+          Array.init count (fun _ ->
+              ok_exn (Gvecdb.create_node db ~txn "doc"))
+        in
+        let requests =
+          List.init count (fun idx ->
+              {
+                Gvecdb.owner_kind = Node;
+                owner_id = node_ids.(idx);
+                vector_tag = "v";
+                data = floats_to_bigstring vectors.(!i + idx);
+                normalize = true;
+                metric = Gvecdb.Euclidean;
+              })
+        in
+        ignore (ok_exn (Gvecdb.create_vectors_batch db ~txn requests)));
     let t1 = clock_us () in
     let batch_time = (t1 -. t0) /. 1e6 in
     results :=
@@ -61,7 +70,7 @@ let bench_batched ~vectors ~batch_size =
         throughput_vps = float count /. batch_time;
       }
       :: !results;
-    progress ~label:"batched insert" ~i:!i ~n;
+    progress ~label:"batch insert" ~i:!i ~n;
     i := batch_end
   done;
   let total_time = (clock_us () -. total_t0) /. 1e6 in

@@ -14,22 +14,39 @@ let build_index ~vectors ~dim ~metric ~hnsw_params ~prefix =
   let db = ok_exn (Gvecdb.create path) in
   let peak_before = get_peak_rss_kb () in
   let t0 = clock_us () in
+  (* First vector initialises the HNSW file with the desired params *)
+  if n > 0 then
+    with_txn db (fun txn ->
+        let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
+        ignore
+          (ok_exn
+             (Gvecdb.create_vector db ~txn ~metric ~hnsw_params Node node "v"
+                (floats_to_bigstring vectors.(0)))));
   let batch_size = 100 in
-  let i = ref 0 in
+  let i = ref 1 in
   while !i < n do
     let batch_end = min n (!i + batch_size) in
+    let count = batch_end - !i in
     with_txn db (fun txn ->
-        for j = !i to batch_end - 1 do
-          let node = ok_exn (Gvecdb.create_node db ~txn "doc") in
-          ignore
-            (ok_exn
-               (Gvecdb.create_vector db ~txn ~metric ~hnsw_params Node node "v"
-                  (floats_to_bigstring vectors.(j))));
-          progress
-            ~label:
-              (Printf.sprintf "insert %s %dd" (metric_to_string metric) dim)
-            ~i:j ~n
-        done);
+        let node_ids =
+          Array.init count (fun _ ->
+              ok_exn (Gvecdb.create_node db ~txn "doc"))
+        in
+        let requests =
+          List.init count (fun idx ->
+              {
+                Gvecdb.owner_kind = Node;
+                owner_id = node_ids.(idx);
+                vector_tag = "v";
+                data = floats_to_bigstring vectors.(!i + idx);
+                normalize = true;
+                metric;
+              })
+        in
+        ignore (ok_exn (Gvecdb.create_vectors_batch db ~txn requests));
+        progress
+          ~label:(Printf.sprintf "insert %s %dd" (metric_to_string metric) dim)
+          ~i:(batch_end - 1) ~n);
     i := batch_end
   done;
   let build_time = (clock_us () -. t0) /. 1e6 in
