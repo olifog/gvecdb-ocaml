@@ -347,6 +347,9 @@ let get_string_arg name default =
     String.sub arg plen (String.length arg - plen)
   with Not_found -> default
 
+let get_bool_arg name =
+  Array.exists (fun s -> s = "--" ^ name) Sys.argv
+
 let ensure_output_dir dir =
   try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
 

@@ -108,7 +108,7 @@ let run_ef_sweep db queries ground_truth k metric ef_values =
     ef_values
 
 let output_results ~n ~dim ~metric ~k ~n_queries ~seed ~hnsw_params ~build_time
-    ~peak_before ~peak_after ~index_size ~results ~output_dir =
+    ~peak_before ~peak_after ~index_size ~results ~output_dir ?label () =
   let peak_delta_kb = peak_after - peak_before in
   let bytes_per_vec = if n > 0 then index_size / n else 0 in
   let ts = timestamp () in
@@ -163,8 +163,10 @@ let output_results ~n ~dim ~metric ~k ~n_queries ~seed ~hnsw_params ~build_time
   in
   let filename =
     Filename.concat output_dir
-      (Printf.sprintf "ann_%s_%d_%dd_k%d_m%d_%s.json" (metric_to_string metric)
-         n dim k hnsw_params.Gvecdb.Hnsw.m ts)
+      (Printf.sprintf "ann_%s_%d_%dd_k%d_m%d_%s%s.json" (metric_to_string metric)
+         n dim k hnsw_params.Gvecdb.Hnsw.m
+         (match label with Some l -> "_" ^ l | None -> "")
+         ts)
   in
   output_json ~filename json
 
@@ -264,6 +266,9 @@ let () =
     else [ get_int_arg "k" 10 ]
   in
 
+  let n_runs = get_int_arg "runs" 1 in
+  let do_rebuild = get_bool_arg "rebuild" in
+
   let metrics =
     match dataset_metric with
     | Some "euclidean" -> [ Gvecdb.Euclidean ]
@@ -303,23 +308,58 @@ let () =
 
           Gc.compact ();
 
-          List.iter
-            (fun k ->
-              Printf.printf "\n--- Sweep k=%d metric=%s ---\n%!" k
-                (metric_to_string metric);
-              let ground_truth =
-                match ground_truth_ext with
-                | Some gt -> external_gt_to_ids gt ~k
-                | None -> compute_ground_truth db queries k metric
+          let run_sweeps ?label () =
+            List.iter
+              (fun k ->
+                Printf.printf "\n--- Sweep k=%d metric=%s%s ---\n%!" k
+                  (metric_to_string metric)
+                  (match label with Some l -> " (" ^ l ^ ")" | None -> "");
+                let ground_truth =
+                  match ground_truth_ext with
+                  | Some gt -> external_gt_to_ids gt ~k
+                  | None -> compute_ground_truth db queries k metric
+                in
+                Gc.compact ();
+                let results =
+                  run_ef_sweep db queries ground_truth k metric ef_values
+                in
+                output_results ~n:actual_n ~dim:actual_dim ~metric ~k
+                  ~n_queries:(Array.length queries) ~seed ~hnsw_params
+                  ~build_time ~peak_before ~peak_after ~index_size ~results
+                  ~output_dir ?label ())
+              k_values
+          in
+
+          for run = 1 to n_runs do
+            let label =
+              if n_runs > 1 then Some (Printf.sprintf "run%d" run)
+              else None
+            in
+            run_sweeps ?label ()
+          done;
+
+          if do_rebuild then begin
+            Printf.printf "\n=== Rebuilding HNSW index ===\n%!";
+            let pre_size = get_db_size_bytes path in
+            let t0 = clock_us () in
+            ok_exn (Gvecdb.rebuild_hnsw_index db ~vector_tag:"v" ());
+            let rebuild_time = (clock_us () -. t0) /. 1e6 in
+            let post_size = get_db_size_bytes path in
+            Printf.printf
+              "Rebuild: %.2fs (%.0f vec/s), size: %d -> %d bytes (%.1fx compaction)\n%!"
+              rebuild_time (float actual_n /. rebuild_time)
+              pre_size post_size
+              (float pre_size /. float post_size);
+
+            for run = 1 to n_runs do
+              let label =
+                if n_runs > 1 then
+                  Some (Printf.sprintf "rebuilt_run%d" run)
+                else Some "rebuilt"
               in
-              Gc.compact ();
-              let results =
-                run_ef_sweep db queries ground_truth k metric ef_values
-              in
-              output_results ~n:actual_n ~dim:actual_dim ~metric ~k
-                ~n_queries:(Array.length queries) ~seed ~hnsw_params ~build_time
-                ~peak_before ~peak_after ~index_size ~results ~output_dir)
-            k_values))
+              run_sweeps ?label ()
+            done
+          end))
     metrics;
 
   Printf.printf "\nDone.\n%!"

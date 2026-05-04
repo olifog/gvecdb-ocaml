@@ -35,6 +35,11 @@
   unix))
 
 (executable
+ (name bench_search_profile)
+ (modules bench_search_profile)
+ (libraries bench_common gvecdb bigstringaf unix))
+
+(executable
  (name bench_crash)
  (modules bench_crash)
  (libraries bench_common gvecdb yojson bigstringaf unix))
