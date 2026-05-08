@@ -25,6 +25,7 @@ jobs:
             default: "git+https://github.com/ocaml/opam-repository.git"
           opam-pin: false
           opam-disable-sandboxing: true
+          cache-prefix: v2
 
       - name: Install system dependencies
         run: |
