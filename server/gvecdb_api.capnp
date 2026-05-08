@@ -119,6 +119,14 @@ interface Gvecdb {
     metric :UInt8
   ) -> (vectorIds :List(Int64), error :Text);
 
+  createVectorNoIndex @23 (
+    nodeIds :List(Int64),
+    vectorTag :Text,
+    vectors :List(Data),
+    normalize :Bool,
+    metric :UInt8
+  ) -> (vectorIds :List(Int64), error :Text);
+
   # -- Maintenance --
   rebuildHnswIndex @21 (
     vectorTag :Text

@@ -15,8 +15,12 @@ import httpx
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
+from concurrent.futures import ThreadPoolExecutor
+
 from arxiv_demo.embeddings import embed_batch_to_bytes
 from arxiv_demo.gvecdb_client import METRIC_COSINE, GvecdbClient
+
+EMBED_WORKERS = 10
 
 
 class ArxivRecord(TypedDict):
@@ -40,7 +44,7 @@ console = Console()
 EMBED_BATCH_SIZE = 96
 RPC_CONCURRENCY = 32
 MIN_YEAR = 0
-REBUILD_INTERVAL = 300_000
+REBUILD_INTERVAL = 0  # disabled — do one final rebuild after ingestion
 
 OPENALEX_BATCH_SIZE = 50
 OPENALEX_EMAIL = "demo@gvecdb.dev"
@@ -281,6 +285,8 @@ async def ingest_papers(
             })
         )
 
+    embed_pool = ThreadPoolExecutor(max_workers=EMBED_WORKERS)
+
     with progress:
         if new_authors:
             task_authors = progress.add_task("Creating authors", total=len(new_authors))
@@ -309,14 +315,15 @@ async def ingest_papers(
                 author_name_to_id[name] = node_id
 
         task_papers = progress.add_task("Ingesting papers", total=len(remaining))
-        since_rebuild = 0
 
-        for batch_start in range(0, len(remaining), EMBED_BATCH_SIZE):
-            batch = remaining[batch_start : batch_start + EMBED_BATCH_SIZE]
-            sem = asyncio.Semaphore(RPC_CONCURRENCY)
+        rpc_sem = asyncio.Semaphore(RPC_CONCURRENCY)
+        embed_sem = asyncio.Semaphore(20)  # max concurrent Bedrock requests
+        loop = asyncio.get_event_loop()
+        save_lock = asyncio.Lock()
 
+        async def _process_batch(batch: list[ArxivRecord]) -> None:
             async def _create_paper(p: ArxivRecord) -> tuple[str, int]:
-                async with sem:
+                async with rpc_sem:
                     node_id = await client.create_node("paper")
                     props = GvecdbClient.build_paper_props(
                         title=p["title"],
@@ -336,12 +343,11 @@ async def ingest_papers(
                     return p["id"], node_id
 
             paper_results = await asyncio.gather(*[_create_paper(p) for p in batch])
-            for arxiv_id, node_id in paper_results:
-                arxiv_id_to_node[arxiv_id] = node_id
+            batch_arxiv_to_node = dict(paper_results)
 
             edge_coros = []
             for p in batch:
-                paper_node = arxiv_id_to_node[p["id"]]
+                paper_node = batch_arxiv_to_node[p["id"]]
                 for pos, author_name in enumerate(p["authors"]):
                     author_node = author_name_to_id.get(author_name)
                     if author_node is None:
@@ -352,7 +358,7 @@ async def ingest_papers(
                         p_node: int = paper_node,
                         position: int = pos,
                     ) -> None:
-                        async with sem:
+                        async with rpc_sem:
                             edge_id = await client.create_edge("authored", a_node, p_node)
                             props = GvecdbClient.build_authored_props(min(position, 255))
                             await client.set_edge_props(edge_id, "authored", props)
@@ -364,31 +370,50 @@ async def ingest_papers(
 
             abstracts = [p["abstract"] for p in batch]
             titles = [p["title"] for p in batch]
-            abstract_vecs = embed_batch_to_bytes(abstracts)
-            title_vecs = embed_batch_to_bytes(titles)
 
-            batch_node_ids = [arxiv_id_to_node[p["id"]] for p in batch]
-            await client.create_vector_batch(
+            async with embed_sem:
+                abstract_vecs = await loop.run_in_executor(
+                    embed_pool, embed_batch_to_bytes, abstracts
+                )
+            async with embed_sem:
+                title_vecs = await loop.run_in_executor(
+                    embed_pool, embed_batch_to_bytes, titles
+                )
+
+            batch_node_ids = [batch_arxiv_to_node[p["id"]] for p in batch]
+            await client.create_vector_no_index(
                 batch_node_ids, "abstract_embedding", abstract_vecs, metric=METRIC_COSINE
             )
-            await client.create_vector_batch(
+            await client.create_vector_no_index(
                 batch_node_ids, "title_embedding", title_vecs, metric=METRIC_COSINE
             )
 
-            for p in batch:
-                ingested_ids.add(p["id"])
-                progress.advance(task_papers)
-            since_rebuild += len(batch)
-            _save_state()
+            async with save_lock:
+                for p in batch:
+                    arxiv_id_to_node[p["id"]] = batch_arxiv_to_node[p["id"]]
+                    ingested_ids.add(p["id"])
+                    progress.advance(task_papers)
+                _save_state()
 
-            if since_rebuild >= REBUILD_INTERVAL:
-                console.print(
-                    f"[yellow]Rebuilding HNSW indexes ({len(ingested_ids)} papers)...[/yellow]"
-                )
-                await client.rebuild_hnsw_index("abstract_embedding")
-                await client.rebuild_hnsw_index("title_embedding")
-                since_rebuild = 0
-                console.print("[green]Rebuild complete[/green]")
+        batch_sem = asyncio.Semaphore(10)  # max 10 batches in-flight
+        tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+
+        for batch_start in range(0, len(remaining), EMBED_BATCH_SIZE):
+            batch = remaining[batch_start : batch_start + EMBED_BATCH_SIZE]
+            await batch_sem.acquire()
+
+            async def _run_batch(b: list[ArxivRecord] = batch) -> None:
+                try:
+                    await _process_batch(b)
+                finally:
+                    batch_sem.release()
+
+            task = asyncio.ensure_future(_run_batch())
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+
+        if tasks:
+            await asyncio.gather(*tasks)
 
     console.print(f"  Papers: {len(arxiv_id_to_node)}")
     console.print(f"  Authors: {len(author_name_to_id)}")

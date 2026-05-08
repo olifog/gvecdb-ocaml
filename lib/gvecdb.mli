@@ -205,6 +205,19 @@ val create_vector :
     preserved in metadata. [~metric] and [~hnsw_params] apply only when the HNSW
     index is first created for this vector tag. requires explicit transaction *)
 
+val create_vector_no_index :
+  t ->
+  txn:[> `Read | `Write ] txn ->
+  normalize:bool ->
+  metric:distance_metric ->
+  owner_kind ->
+  id ->
+  string ->
+  bigstring ->
+  (vector_id, error) result
+(** store vector in vector file and LMDB metadata without inserting into HNSW.
+    use [rebuild_hnsw_index] afterwards to build the index. *)
+
 type batch_vector_request = {
   owner_kind : owner_kind;
   owner_id : id;

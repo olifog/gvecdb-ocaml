@@ -240,6 +240,25 @@ class GvecdbClient:
         _check_error(result)
         return [int(vid) for vid in result.vectorIds]
 
+    async def create_vector_no_index(
+        self,
+        node_ids: list[int],
+        vector_tag: str,
+        vectors: list[bytes],
+        *,
+        normalise: bool = False,
+        metric: int = METRIC_COSINE,
+    ) -> list[int]:
+        result = await self._client.createVectorNoIndex(
+            nodeIds=node_ids,
+            vectorTag=vector_tag,
+            vectors=vectors,
+            normalize=normalise,
+            metric=metric,
+        )
+        _check_error(result)
+        return [int(vid) for vid in result.vectorIds]
+
     async def rebuild_hnsw_index(self, vector_tag: str) -> None:
         result = await self._client.rebuildHnswIndex(vectorTag=vector_tag)
         _check_error(result)

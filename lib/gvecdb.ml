@@ -595,6 +595,47 @@ let create_vector_internal (t : t) ~txn ~normalize ~metric ?hnsw_params
                                 (Keys.encode_hnsw_slot_value slot_id);
                               vector_id))))))
 
+let create_vector_no_index (t : t) ~txn ~normalize ~metric
+    (owner_kind : owner_kind) (owner_id : id) (vector_tag : string)
+    (data : bigstring) : (vector_id, error) result =
+  let* vector_tag_id = Store.intern t.db ~txn vector_tag in
+  let dim = Float32_vec.dim data in
+  let store_data, norm =
+    if normalize then Float32_vec.normalize data
+    else (data, sqrt (Float32_vec.norm_sq data))
+  in
+  match Vector_file.allocate t.db.vector_file dim with
+  | Error e -> Error (Storage_error (Vector_file.error_to_string e))
+  | Ok file_offset -> (
+      match
+        Vector_file.write_vector_at t.db.vector_file file_offset
+          ~normalized:normalize store_data norm
+      with
+      | Error e -> Error (Storage_error (Vector_file.error_to_string e))
+      | Ok () -> (
+          let _ = get_or_create_hnsw_mvcc t ~metric vector_tag in
+          let vector_id_result =
+            Types.wrap_lmdb_exn (fun () ->
+                Store.get_next_id t.db ~txn Types.Metadata.next_vector_id)
+          in
+          match vector_id_result with
+          | Error e -> Error e
+          | Ok vector_id ->
+              Types.wrap_lmdb_exn (fun () ->
+                  let key = Keys.encode_id_bs vector_id in
+                  let owner_value =
+                    Keys.encode_vector_owner_bs ~owner_kind ~owner_id
+                      ~vector_tag_id ~file_offset
+                  in
+                  Lmdb.Map.set t.db.vector_owners ~txn key owner_value;
+                  let index_key =
+                    Keys.encode_vector_index_bs ~owner_kind ~owner_id
+                      ~vector_tag_id ~vector_id
+                  in
+                  Lmdb.Map.set t.db.vector_index ~txn index_key
+                    Store.empty_bigstring;
+                  vector_id)))
+
 type batch_vector_request = {
   owner_kind : owner_kind;
   owner_id : id;

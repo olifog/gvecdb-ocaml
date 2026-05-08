@@ -50,3 +50,9 @@
  (ocamlopt_flags
   (:standard -alert -do_not_spawn_domains -alert -unsafe_multidomain))
  (libraries bench_common gvecdb yojson bigstringaf unix))
+
+(executable
+ (name bench_deletion)
+ (modules bench_deletion)
+ (libraries bench_common gvecdb yojson bigstringaf unix))
+
