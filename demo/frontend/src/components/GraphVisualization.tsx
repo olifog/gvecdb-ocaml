@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Crosshair } from "@phosphor-icons/react";
 import ForceGraph2D from "react-force-graph-2d";
 import type { GraphData, SearchFilters } from "@/api/types";
@@ -67,8 +67,6 @@ export default function GraphVisualisation({
   const initialFitDone = useRef(false);
   const pendingCentreRef = useRef<number | undefined>(undefined);
   const forcesInitialized = useRef(false);
-  const hoveredNodeIdRef = useRef<number | null>(null);
-  const [, forceRender] = useState(0);
 
   const filteredData = useMemo(() => {
     let nodes = data.nodes;
@@ -162,17 +160,6 @@ export default function GraphVisualisation({
     };
   }, [filteredData]);
 
-  // Build adjacency for hover highlighting
-  const adjacency = useMemo(() => {
-    const map = new Map<number, Set<number>>();
-    filteredData.edges.forEach((edge) => {
-      if (!map.has(edge.source)) map.set(edge.source, new Set());
-      if (!map.has(edge.target)) map.set(edge.target, new Set());
-      map.get(edge.source)!.add(edge.target);
-      map.get(edge.target)!.add(edge.source);
-    });
-    return map;
-  }, [filteredData.edges]);
 
   useEffect(() => {
     if (!fgRef.current?.d3Force || forcesInitialized.current) return;
@@ -223,13 +210,6 @@ export default function GraphVisualisation({
     [onNodeClick],
   );
 
-  const handleNodeHover = useCallback((node: FGNode | null | undefined) => {
-    const newId = node ? node.id : null;
-    if (hoveredNodeIdRef.current !== newId) {
-      hoveredNodeIdRef.current = newId;
-      forceRender((c) => c + 1);
-    }
-  }, []);
 
   const focusSelected = useCallback(() => {
     if (selectedNodeId == null || !fgRef.current?.centerAt) return;
@@ -242,18 +222,9 @@ export default function GraphVisualisation({
 
   const paintNode = useCallback(
     (node: FGNode, ctx: CanvasRenderingContext2D) => {
-      const hoveredNodeId = hoveredNodeIdRef.current;
       const r = node.type === "paper" ? 5 : 4;
       const colour = getNodeColour(node);
       const selected = node.id === selectedNodeId;
-      const hovered = node.id === hoveredNodeId;
-
-      const highlighted = hoveredNodeId == null
-        || node.id === hoveredNodeId
-        || (adjacency.get(hoveredNodeId)?.has(node.id) ?? false);
-      const dimmed = hoveredNodeId != null && !highlighted;
-
-      ctx.globalAlpha = dimmed ? 0.1 : 1;
 
       if (selected) {
         ctx.beginPath();
@@ -273,47 +244,31 @@ export default function GraphVisualisation({
         ctx.stroke();
       }
 
-      if (hovered || selected) {
-        ctx.globalAlpha = 1;
-        ctx.font = "3px 'JetBrains Mono Variable', monospace";
-        ctx.textAlign = "center";
-        ctx.fillStyle = "#ffffff";
-        const label =
-          node.label.length > 30
-            ? `${node.label.slice(0, 28)}...`
-            : node.label;
-        ctx.fillText(label, node.x ?? 0, (node.y ?? 0) + r + 4);
-      }
-
-      ctx.globalAlpha = 1;
+      ctx.font = "3px 'JetBrains Mono Variable', monospace";
+      ctx.textAlign = "center";
+      ctx.fillStyle = selected ? "#ffffff" : "rgba(255,255,255,0.6)";
+      const label =
+        node.label.length > 30
+          ? `${node.label.slice(0, 28)}...`
+          : node.label;
+      ctx.fillText(label, node.x ?? 0, (node.y ?? 0) + r + 4);
     },
-    [selectedNodeId, adjacency],
+    [selectedNodeId],
   );
 
   const paintLink = useCallback(
     (link: FGLink, ctx: CanvasRenderingContext2D) => {
-      const hoveredNodeId = hoveredNodeIdRef.current;
       const src = link.source as FGNode;
       const tgt = link.target as FGNode;
 
-      let highlighted = true;
-      if (hoveredNodeId != null) {
-        const srcId = typeof link.source === "object" ? link.source.id : link.source;
-        const tgtId = typeof link.target === "object" ? link.target.id : link.target;
-        highlighted = srcId === hoveredNodeId || tgtId === hoveredNodeId;
-      }
-      const dimmed = hoveredNodeId != null && !highlighted;
-
-      ctx.globalAlpha = dimmed ? 0.05 : 1;
       ctx.beginPath();
       ctx.moveTo(src.x ?? 0, src.y ?? 0);
       ctx.lineTo(tgt.x ?? 0, tgt.y ?? 0);
       ctx.strokeStyle = getEdgeColour(link);
-      ctx.lineWidth = highlighted && hoveredNodeId != null ? 1 : 0.5;
+      ctx.lineWidth = 0.5;
       ctx.stroke();
-      ctx.globalAlpha = 1;
     },
-    [adjacency],
+    [],
   );
 
   return (
@@ -326,7 +281,6 @@ export default function GraphVisualisation({
         nodeCanvasObject={paintNode}
         linkCanvasObject={paintLink}
         onNodeClick={handleNodeClick}
-        onNodeHover={handleNodeHover}
         onEngineStop={handleEngineStop}
         cooldownTicks={60}
         d3AlphaDecay={0.08}
