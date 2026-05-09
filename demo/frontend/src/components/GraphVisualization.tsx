@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Crosshair } from "@phosphor-icons/react";
 import ForceGraph2D from "react-force-graph-2d";
-import type { GraphData } from "@/api/types";
+import type { GraphData, SearchFilters } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import GraphControls, { type GraphSettings, DEFAULT_GRAPH_SETTINGS } from "@/components/GraphControls";
 
 interface GraphVisualisationProps {
   data: GraphData;
+  filters: SearchFilters;
   width?: number;
   height?: number;
   selectedNodeId?: number;
   onNodeClick: (nodeId: number, nodeType: string) => void;
+  onVisibleCountChange?: (nodes: number, edges: number) => void;
 }
 
 interface FGNode {
@@ -30,45 +31,31 @@ interface FGLink {
   type: string;
 }
 
-function getNodeColour(node: FGNode, settings: GraphSettings): string {
-  if (settings.colorBy === "type") {
-    if (node.type === "paper") return settings.paperColor;
-    if (node.type === "author") return settings.authorColor;
-    return "#94a3b8";
-  }
-  if (settings.colorBy === "year" && node.type === "paper") {
-    const year = Number(node.metadata.year) || 2020;
-    const t = Math.max(0, Math.min(1, (year - 1990) / 35));
-    const r = Math.round(59 + t * (59 - 59));
-    const g = Math.round(130 + t * (130 - 130));
-    const b = Math.round(246 * (0.3 + t * 0.7));
-    return `rgb(${r},${g},${b})`;
-  }
-  if (settings.colorBy === "paperCount" && node.type === "author") {
-    const count = Number(node.metadata.paper_count) || 1;
-    const t = Math.min(1, count / 50);
-    const r = Math.round(34 + t * (220 - 34));
-    const g = Math.round(197 - t * (197 - 50));
-    const b = Math.round(94 - t * (94 - 50));
-    return `rgb(${r},${g},${b})`;
-  }
-  if (node.type === "paper") return settings.paperColor;
-  if (node.type === "author") return settings.authorColor;
+const PAPER_COLOR = "#3b82f6";
+const AUTHOR_COLOR = "#22c55e";
+const CITES_COLOR = "#64748b";
+const AUTHORED_COLOR = "#f97316";
+
+function getNodeColour(node: FGNode): string {
+  if (node.type === "paper") return PAPER_COLOR;
+  if (node.type === "author") return AUTHOR_COLOR;
   return "#94a3b8";
 }
 
-function getEdgeColour(link: FGLink, settings: GraphSettings): string {
-  if (link.type === "cites") return settings.citesColor;
-  if (link.type === "authored") return settings.authoredColor;
+function getEdgeColour(link: FGLink): string {
+  if (link.type === "cites") return CITES_COLOR;
+  if (link.type === "authored") return AUTHORED_COLOR;
   return "#475569";
 }
 
 export default function GraphVisualisation({
   data,
+  filters,
   width,
   height,
   selectedNodeId,
   onNodeClick,
+  onVisibleCountChange,
 }: GraphVisualisationProps) {
   const fgRef = useRef<{
     d3ReheatSimulation?: () => void;
@@ -79,29 +66,72 @@ export default function GraphVisualisation({
   }>(undefined);
   const initialFitDone = useRef(false);
   const pendingCentreRef = useRef<number | undefined>(undefined);
-  const [settings, setSettings] = useState<GraphSettings>(DEFAULT_GRAPH_SETTINGS);
+  const forcesInitialized = useRef(false);
+  const hoveredNodeIdRef = useRef<number | null>(null);
+  const [, forceRender] = useState(0);
 
   const filteredData = useMemo(() => {
     let nodes = data.nodes;
     let edges = data.edges;
-    if (!settings.showPapers) {
-      const hidden = new Set(nodes.filter((n) => n.type === "paper").map((n) => n.id));
-      nodes = nodes.filter((n) => n.type !== "paper");
+
+    const hidden = new Set<number>();
+
+    // Year filter
+    if (filters.yearMin != null || filters.yearMax != null) {
+      nodes = nodes.filter((n) => {
+        if (n.type !== "paper") return true;
+        if (selectedNodeId != null && n.id === selectedNodeId) return true;
+        const year = Number(n.metadata.year);
+        if (!year) return true;
+        if (filters.yearMin != null && year < filters.yearMin) { hidden.add(n.id); return false; }
+        if (filters.yearMax != null && year > filters.yearMax) { hidden.add(n.id); return false; }
+        return true;
+      });
+    }
+
+    // Category filter — exact token match
+    if (filters.category) {
+      const cats = filters.category.split(",").map((c) => c.trim().toLowerCase());
+      nodes = nodes.filter((n) => {
+        if (n.type !== "paper") return true;
+        if (selectedNodeId != null && n.id === selectedNodeId) return true;
+        const nodeCats = String(n.metadata.categories || "").toLowerCase().split(/\s+/);
+        if (!cats.some((c) => nodeCats.includes(c))) { hidden.add(n.id); return false; }
+        return true;
+      });
+    }
+
+    // Published only filter
+    if (filters.publishedOnly) {
+      nodes = nodes.filter((n) => {
+        if (n.type !== "paper") return true;
+        if (selectedNodeId != null && n.id === selectedNodeId) return true;
+        const doi = n.metadata.doi;
+        if (!doi) { hidden.add(n.id); return false; }
+        return true;
+      });
+    }
+
+    // Remove edges connected to hidden nodes
+    if (hidden.size > 0) {
       edges = edges.filter((e) => !hidden.has(e.source) && !hidden.has(e.target));
     }
-    if (!settings.showAuthors) {
-      const hidden = new Set(nodes.filter((n) => n.type === "author").map((n) => n.id));
-      nodes = nodes.filter((n) => n.type !== "author");
-      edges = edges.filter((e) => !hidden.has(e.source) && !hidden.has(e.target));
-    }
-    if (!settings.showCites) {
-      edges = edges.filter((e) => e.type !== "cites");
-    }
-    if (!settings.showAuthored) {
-      edges = edges.filter((e) => e.type !== "authored");
-    }
+
+    // Remove orphan nodes (no remaining edges) — both authors and papers
+    const connectedIds = new Set<number>();
+    edges.forEach((e) => { connectedIds.add(e.source); connectedIds.add(e.target); });
+    nodes = nodes.filter((n) => {
+      if (selectedNodeId != null && n.id === selectedNodeId) return true;
+      return connectedIds.has(n.id);
+    });
+
     return { nodes, edges };
-  }, [data, settings.showPapers, settings.showAuthors, settings.showCites, settings.showAuthored]);
+  }, [data, filters.yearMin, filters.yearMax, filters.category, filters.publishedOnly, selectedNodeId]);
+
+  // Report visible counts to parent
+  useEffect(() => {
+    onVisibleCountChange?.(filteredData.nodes.length, filteredData.edges.length);
+  }, [filteredData.nodes.length, filteredData.edges.length, onVisibleCountChange]);
 
   const nodeMapRef = useRef<Map<number, FGNode>>(new Map());
 
@@ -132,17 +162,30 @@ export default function GraphVisualisation({
     };
   }, [filteredData]);
 
+  // Build adjacency for hover highlighting
+  const adjacency = useMemo(() => {
+    const map = new Map<number, Set<number>>();
+    filteredData.edges.forEach((edge) => {
+      if (!map.has(edge.source)) map.set(edge.source, new Set());
+      if (!map.has(edge.target)) map.set(edge.target, new Set());
+      map.get(edge.source)!.add(edge.target);
+      map.get(edge.target)!.add(edge.source);
+    });
+    return map;
+  }, [filteredData.edges]);
+
   useEffect(() => {
-    if (!fgRef.current?.d3Force) return;
+    if (!fgRef.current?.d3Force || forcesInitialized.current) return;
     const charge = fgRef.current.d3Force("charge") as { strength?: (v: number) => void; distanceMax?: (v: number) => void } | undefined;
     if (charge?.strength) {
-      charge.strength(-8);
-      charge.distanceMax?.(80);
+      charge.strength(-40);
+      charge.distanceMax?.(200);
     }
     const link = fgRef.current.d3Force("link") as { distance?: (v: number) => void } | undefined;
     if (link?.distance) {
-      link.distance(30);
+      link.distance(60);
     }
+    forcesInitialized.current = true;
   }, [graphData]);
 
   const prevNodeCountRef = useRef(0);
@@ -180,6 +223,13 @@ export default function GraphVisualisation({
     [onNodeClick],
   );
 
+  const handleNodeHover = useCallback((node: FGNode | null | undefined) => {
+    const newId = node ? node.id : null;
+    if (hoveredNodeIdRef.current !== newId) {
+      hoveredNodeIdRef.current = newId;
+      forceRender((c) => c + 1);
+    }
+  }, []);
 
   const focusSelected = useCallback(() => {
     if (selectedNodeId == null || !fgRef.current?.centerAt) return;
@@ -192,9 +242,18 @@ export default function GraphVisualisation({
 
   const paintNode = useCallback(
     (node: FGNode, ctx: CanvasRenderingContext2D) => {
+      const hoveredNodeId = hoveredNodeIdRef.current;
       const r = node.type === "paper" ? 5 : 4;
-      const colour = getNodeColour(node, settings);
+      const colour = getNodeColour(node);
       const selected = node.id === selectedNodeId;
+      const hovered = node.id === hoveredNodeId;
+
+      const highlighted = hoveredNodeId == null
+        || node.id === hoveredNodeId
+        || (adjacency.get(hoveredNodeId)?.has(node.id) ?? false);
+      const dimmed = hoveredNodeId != null && !highlighted;
+
+      ctx.globalAlpha = dimmed ? 0.1 : 1;
 
       if (selected) {
         ctx.beginPath();
@@ -214,33 +273,48 @@ export default function GraphVisualisation({
         ctx.stroke();
       }
 
-      ctx.font = "3px 'JetBrains Mono Variable', monospace";
-      ctx.textAlign = "center";
-      ctx.fillStyle = selected ? "#ffffff" : "rgba(255,255,255,0.6)";
-      const label =
-        node.label.length > 30
-          ? `${node.label.slice(0, 28)}...`
-          : node.label;
-      ctx.fillText(label, node.x ?? 0, (node.y ?? 0) + r + 4);
+      if (hovered || selected) {
+        ctx.globalAlpha = 1;
+        ctx.font = "3px 'JetBrains Mono Variable', monospace";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffffff";
+        const label =
+          node.label.length > 30
+            ? `${node.label.slice(0, 28)}...`
+            : node.label;
+        ctx.fillText(label, node.x ?? 0, (node.y ?? 0) + r + 4);
+      }
+
+      ctx.globalAlpha = 1;
     },
-    [selectedNodeId, settings],
+    [selectedNodeId, adjacency],
   );
 
   const paintLink = useCallback(
     (link: FGLink, ctx: CanvasRenderingContext2D) => {
+      const hoveredNodeId = hoveredNodeIdRef.current;
       const src = link.source as FGNode;
       const tgt = link.target as FGNode;
+
+      let highlighted = true;
+      if (hoveredNodeId != null) {
+        const srcId = typeof link.source === "object" ? link.source.id : link.source;
+        const tgtId = typeof link.target === "object" ? link.target.id : link.target;
+        highlighted = srcId === hoveredNodeId || tgtId === hoveredNodeId;
+      }
+      const dimmed = hoveredNodeId != null && !highlighted;
+
+      ctx.globalAlpha = dimmed ? 0.05 : 1;
       ctx.beginPath();
       ctx.moveTo(src.x ?? 0, src.y ?? 0);
       ctx.lineTo(tgt.x ?? 0, tgt.y ?? 0);
-      ctx.strokeStyle = getEdgeColour(link, settings);
-      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = getEdgeColour(link);
+      ctx.lineWidth = highlighted && hoveredNodeId != null ? 1 : 0.5;
       ctx.stroke();
+      ctx.globalAlpha = 1;
     },
-    [settings],
+    [adjacency],
   );
-
-  const getNodeLabel = useCallback((node: FGNode) => node.label, []);
 
   return (
     <div className="relative w-full h-full">
@@ -252,8 +326,8 @@ export default function GraphVisualisation({
         nodeCanvasObject={paintNode}
         linkCanvasObject={paintLink}
         onNodeClick={handleNodeClick}
+        onNodeHover={handleNodeHover}
         onEngineStop={handleEngineStop}
-        nodeLabel={getNodeLabel}
         cooldownTicks={60}
         d3AlphaDecay={0.08}
         d3VelocityDecay={0.6}
@@ -267,9 +341,6 @@ export default function GraphVisualisation({
             <Crosshair className="size-4" />
           </Button>
         )}
-      </div>
-      <div className="absolute top-3 right-3">
-        <GraphControls settings={settings} onChange={setSettings} />
       </div>
     </div>
   );

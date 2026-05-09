@@ -11,6 +11,7 @@ import PaperCard from "@/components/PaperCard";
 import SearchBar from "@/components/SearchBar";
 
 const MAX_GRAPH_NODES = 500;
+type VisibleCounts = { nodes: number; edges: number };
 
 export default function ExplorerPage() {
   const { nodeId: paramNodeId } = useParams<{ nodeId: string }>();
@@ -34,8 +35,9 @@ export default function ExplorerPage() {
   });
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+  const [visibleCounts, setVisibleCounts] = useState<VisibleCounts>({ nodes: 0, edges: 0 });
 
-  const { data: neighbourhood } = useNeighborhood(focusNodeId, 2);
+  const { data: neighbourhood } = useNeighborhood(focusNodeId, 1);
   const { data: searchResults } = useSearch(searchQuery, 20, "abstract_embedding", filters);
 
   useEffect(() => {
@@ -147,6 +149,10 @@ export default function ExplorerPage() {
     setSelectedNode(null);
   }, [selectedNode]);
 
+  const handleVisibleCountChange = useCallback((nodes: number, edges: number) => {
+    setVisibleCounts({ nodes, edges });
+  }, []);
+
   const sidebarWidth = selectedNode ? 440 : 0;
   const graphWidth = dimensions.width - sidebarWidth;
 
@@ -157,10 +163,12 @@ export default function ExplorerPage() {
           {mergedGraph.nodes.length > 0 ? (
             <GraphVisualization
               data={mergedGraph}
+              filters={filters}
               width={graphWidth > 0 ? graphWidth : dimensions.width}
               height={dimensions.height}
               selectedNodeId={selectedNode?.id}
               onNodeClick={handleNodeClick}
+              onVisibleCountChange={handleVisibleCountChange}
             />
           ) : (
             <div className="flex h-full items-center justify-center">
@@ -225,7 +233,7 @@ export default function ExplorerPage() {
       <div className="border-t bg-card/50 px-4 py-1.5 shrink-0">
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
           <span className="tabular-nums">
-            {mergedGraph.nodes.length} nodes, {mergedGraph.edges.length} edges
+            {visibleCounts.nodes} nodes, {visibleCounts.edges} edges
           </span>
           <span className="flex items-center gap-1">
             <span className="inline-block h-2 w-2 rounded-full bg-[#3b82f6]" />

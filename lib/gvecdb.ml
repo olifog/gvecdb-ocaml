@@ -1166,7 +1166,7 @@ let rebuild_hnsw_index (t : t) ?(txn : rw_txn option)
           Hashtbl.replace t.hnsw_mvcc vector_tag mvcc;
           Ok ())
         else
-          let batch_size = 100_000 in
+          let batch_size = 3_000_000 in
           let hnsw_txn = ref (Hnsw_mvcc.begin_write mvcc) in
           let count = ref 0 in
           let pairwise_distance = make_pairwise_distance_inline metric dim in
